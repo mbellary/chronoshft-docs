@@ -1,0 +1,10 @@
+/* Keep the existing diagrams and long code examples usable on smaller screens. */
+.rst-content img,
+.rst-content svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.rst-content pre {
+  overflow-x: auto;
+}

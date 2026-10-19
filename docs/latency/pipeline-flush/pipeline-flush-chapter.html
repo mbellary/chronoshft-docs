@@ -1,0 +1,874 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Pipeline flushes in HFT — a Rust engineering chapter</title><style>*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;color:#163047;background:#fffefa;font:17px/1.75 system-ui,sans-serif}aside{position:fixed;inset:0 auto 0 0;width:285px;background:#edf3f4;padding:30px 24px;overflow:auto}aside strong{font-size:12px;letter-spacing:2px;color:#476974}aside a{display:block;color:#36515e;text-decoration:none;font-size:13px;line-height:1.45;margin:15px 0}aside a:hover{color:#00776a}main{max-width:1160px;margin-left:285px;padding:55px 64px 100px}h1{font-size:46px;line-height:1.13;letter-spacing:-1.6px;max-width:850px}h2{font-size:29px;line-height:1.25;border-top:2px solid #dbe6e9;padding-top:36px;margin-top:65px;scroll-margin-top:20px}h3{font-size:22px;line-height:1.4;margin-top:36px}h4{font-size:19px}a{color:#006f68}p{margin:20px 0}table{display:block;overflow:auto;border-collapse:collapse;font-size:14px;line-height:1.6;margin:24px 0}td,th{padding:13px 15px;border:1px solid #dbe4e5;min-width:150px;text-align:left;vertical-align:top}th{background:#e9f0f2}tr:nth-child(even){background:#f5f7f6}pre{background:#142b3b;color:#e1eef2;border-radius:10px;padding:24px;overflow:auto;font:13px/1.65 ui-monospace,monospace}code{font-family:ui-monospace,monospace;font-size:.87em}p code,li code,td code{background:#eaf0f1;border-radius:4px;padding:2px 5px}pre code{font-size:inherit}svg{display:block;width:100%;height:auto;margin:35px 0}.equation{padding:22px;background:#edf4f3;border-left:4px solid #22796e;border-radius:5px;font:19px/1.6 ui-monospace,monospace;overflow:auto}li{padding-left:4px;margin:10px 0}.k,.kd,.kn{color:#8adbcf}.s,.s1,.s2{color:#f4d393}.c1,.c{color:#a7beca}.nf{color:#9fc6ff}.mi{color:#e6b5c9}footer{margin-top:60px;font-size:13px;color:#526974}@media(max-width:1000px){aside{display:none}main{margin:0 auto;padding:25px;max-width:900px}h1{font-size:35px}}@media print{aside{display:none}main{margin:0;padding:0;max-width:none}body{font-size:11pt}h1{font-size:28pt}h2{break-after:avoid}pre,svg,tr{break-inside:avoid}pre{white-space:pre-wrap;background:#f0f3f4;color:#163047}a{color:inherit}h2{margin-top:30px}}</style></head><body><aside><strong>HFT ENGINEERING / RUST</strong><a href="#learning-map">Learning map</a><a href="#1-replace-one-overloaded-word-with-precise-events">1. Replace one overloaded word with precise events</a><a href="#2-a-small-rust-vocabulary">2. A small Rust vocabulary</a><a href="#3-follow-one-market-event-through-the-system">3. Follow one market event through the system</a><a href="#4-dimension-1-control-flow-recovery-and-refill">4. Dimension 1 — control-flow recovery and refill</a><a href="#5-dimension-2-ordering-fences-and-serialization">5. Dimension 2 — ordering, fences, and serialization</a><a href="#6-dimension-3-cache-ownership-and-locality">6. Dimension 3 — cache ownership and locality</a><a href="#7-dimension-4-queues-draining-and-transmission">7. Dimension 4 — queues, draining, and transmission</a><a href="#8-dimension-5-deterministic-state-recovery">8. Dimension 5 — deterministic state recovery</a><a href="#9-hardware-versus-software-a-corrected-comparison">9. Hardware versus software: a corrected comparison</a><a href="#10-measure-tails-without-fooling-yourself">10. Measure tails without fooling yourself</a><a href="#11-move-from-the-lab-to-production-in-deliberate-stages">11. Move from the lab to production in deliberate stages</a><a href="#12-exercises-with-answers">12. Exercises with answers</a><a href="#13-small-glossary">13. Small glossary</a><a href="#14-sources-and-further-reading">14. Sources and further reading</a></aside><main><h1>Pipeline flushes in HFT: from CPU recovery to correct Rust systems</h1>
+<p><em>A beginner’s chapter with diagrams, worked examples, measurement exercises, and a runnable Rust lab.</em></p>
+<p><strong>What you will learn.</strong> Explain what a CPU discards after a bad prediction; distinguish that from fences, cache coherence, and network buffering; measure lost work without confusing throughput with latency; and write bounded Rust components that preserve correctness during a market-data gap or a partial network write.</p>
+<p><strong>Scope.</strong> Hardware discussion uses Intel-style x86-64 as the main example. AMD, Arm, individual CPU generations, NICs, drivers, and operating systems require their own manuals and measurements. All numerical examples below are hypothetical calculations unless explicitly identified otherwise. The supplied lab is educational code and a starting point for engineering reviews, not a complete exchange gateway or production trading system. Sources were checked on October 19, 2026.</p>
+<p><strong>Companion files:</strong> <a href="pipeline-flush-lab/">Rust lab instructions</a>, <a href="pipeline-flush-lab/src/lib.rs">engine and writer source</a>, and <a href="verification/">verification notes</a>. A standalone HTML edition includes scalable illustrations and a navigation sidebar.</p>
+<h2 id="learning-map">Learning map</h2>
+<p>Your topics naturally form five dimensions. The first three concern the processor; the last two concern application and network behavior.</p>
+<table>
+<thead>
+<tr>
+<th>Dimension</th>
+<th>Your topics</th>
+<th>Question to answer before optimizing</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1. Control-flow recovery</td>
+<td>Branch misprediction and pipeline refill</td>
+<td>How much useful execution was delayed, and why?</td>
+</tr>
+<tr>
+<td>2. Ordering and serialization</td>
+<td>LFENCE, SFENCE, MFENCE, CPUID, scheduling</td>
+<td>Which ordering guarantee does correctness require?</td>
+</tr>
+<tr>
+<td>3. Data ownership and locality</td>
+<td>Invalidation, RFO, false sharing</td>
+<td>Which core owns and modifies each cache line?</td>
+</tr>
+<tr>
+<td>4. Queueing and transmission</td>
+<td>Buffer drain, polling, Nagle, batching</td>
+<td>Where does work wait, and can the consumer catch up?</td>
+</tr>
+<tr>
+<td>5. State recovery</td>
+<td>Sequence gaps, snapshots, replay, rollback</td>
+<td>When may the system safely make decisions again?</td>
+</tr>
+</tbody>
+</table>
+<p>Read sections 1–3 for vocabulary, 4–8 for the five dimensions, and 9–12 for measurement and production development. Work through the exercises after running the lab.</p>
+<h2 id="1-replace-one-overloaded-word-with-precise-events">1. Replace one overloaded word with precise events</h2>
+<p>A pipeline is a sequence of stages through which work travels. Different work items can occupy different stages simultaneously. Think of a restaurant: one meal is being ordered while another is being cooked and a third is being served. A CPU does something analogous with instructions, although its execution is substantially more complex.</p>
+<p>A CPU <strong>pipeline flush</strong> commonly means squashing instructions that must no longer complete architecturally, for example instructions younger than a mispredicted branch. A network <strong>flush</strong> usually means forwarding buffered bytes or draining queued work. A recovery operation might instead discard application state. These events have different causes, effects, and correctness rules.</p>
+<p>A branch misprediction is routine on a speculative processor. It consumes a latency budget, but it does not automatically make a system nondeterministic or catastrophic. Two separate meanings of determinism matter:</p>
+<ul>
+<li><strong>Functional determinism:</strong> the same accepted event sequence produces the same book and decisions.</li>
+<li><strong>Timing predictability:</strong> processing time stays within a useful distribution or validated bound.</li>
+</ul>
+<p>An ordinary Linux application on a general-purpose CPU typically measures a latency distribution. It should not claim a strict worst-case execution bound merely because it has run many benchmarks.</p>
+<h3 id="correct-the-proposed-axioms-before-using-them">Correct the proposed axioms before using them</h3>
+<table>
+<thead>
+<tr>
+<th>Starting claim</th>
+<th>Engineering correction</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A misprediction always costs 15–20+ cycles</td>
+<td>This can be an illustrative scale, not an architectural constant. Branch resolution, dependencies, target availability, CPU model, and surrounding work affect observed loss.</td>
+</tr>
+<tr>
+<td>Refill depth is a second fixed penalty to add</td>
+<td>Commonly reported misprediction recovery costs already include some redirection and refill effects. Define measurement boundaries before adding anything.</td>
+</tr>
+<tr>
+<td>All fences drain all stores and flush the pipeline</td>
+<td>Fences have distinct ordering semantics. A memory-ordering barrier and a fully serializing instruction are different mechanisms.</td>
+</tr>
+<tr>
+<td>A branch flush releases cache-line ownership</td>
+<td>Squashing instructions does not generally invalidate the data cache or surrender every owned line. Speculative accesses can leave cache effects behind.</td>
+</tr>
+<tr>
+<td>A subsequent read always triggers RFO</td>
+<td>An ordinary demand read requests data. RFO concerns acquiring write ownership; the exact transaction depends on coherence state and architecture.</td>
+</tr>
+<tr>
+<td>TCP_NODELAY means immediate wire transmission</td>
+<td>It disables Nagle’s algorithm. Other queues, transport constraints, buffering, and scheduling remain.</td>
+</tr>
+<tr>
+<td>Drop stale market data to get current</td>
+<td>Only when the protocol’s semantics permit it. Discarding required incremental updates can corrupt the book.</td>
+</tr>
+</tbody>
+</table>
+<p>The instruction semantics come from the <a href="https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html">Intel Software Developer’s Manuals</a>. The persistence of microarchitectural effects after speculative execution is discussed in Intel’s <a href="https://www.intel.com/content/www/us/en/developer/articles/technical/software-security-guidance/technical-documentation/hardware-behavior-related-to-speculative-execution.html">hardware behavior documentation</a>. Socket behavior is specified in <a href="https://man7.org/linux/man-pages/man7/tcp.7.html">Linux tcp(7)</a>.</p>
+<h2 id="2-a-small-rust-vocabulary">2. A small Rust vocabulary</h2>
+<p>You do not need advanced Rust to follow the first examples.</p>
+<table>
+<thead>
+<tr>
+<th>Rust notation</th>
+<th>Meaning in this chapter</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>u64</code></td>
+<td>An unsigned 64-bit integer; useful for a sequence number or integer quantity</td>
+</tr>
+<tr>
+<td><code>usize</code></td>
+<td>An unsigned integer sized for indexing this machine’s memory</td>
+</tr>
+<tr>
+<td><code>let mut x</code></td>
+<td>A binding whose value can change</td>
+</tr>
+<tr>
+<td><code>&amp;T</code> / <code>&amp;mut T</code></td>
+<td>A shared borrow / an exclusive mutable borrow</td>
+</tr>
+<tr>
+<td><code>&amp;[Update]</code></td>
+<td>A borrowed sequence of updates; no ownership transfer or copy of the whole sequence</td>
+</tr>
+<tr>
+<td><code>[u64; 8]</code></td>
+<td>Eight integers stored inline, with fixed capacity</td>
+</tr>
+<tr>
+<td><code>Vec&lt;T&gt;</code></td>
+<td>A growable allocation-backed sequence; useful during setup and experiments</td>
+</tr>
+<tr>
+<td><code>enum</code></td>
+<td>A type with named alternatives, such as <code>Live</code> and <code>Recovering</code></td>
+</tr>
+<tr>
+<td><code>Result&lt;T, E&gt;</code></td>
+<td>Either <code>Ok(value)</code> or <code>Err(error)</code></td>
+</tr>
+<tr>
+<td><code>?</code></td>
+<td>Return an error to the caller if this operation failed</td>
+</tr>
+<tr>
+<td><code>match</code></td>
+<td>Handle each possible outcome explicitly</td>
+</tr>
+<tr>
+<td><code>checked_add</code></td>
+<td>Addition that reports overflow instead of silently assuming it cannot happen</td>
+</tr>
+</tbody>
+</table>
+<p>In these examples, quantities and prices should use documented integer units. Floating-point prices introduce a separate representation problem. The supplied miniature book stores only quantities at eight fixed level indexes so the recovery mechanism stays visible.</p>
+<p>Rust prevents many memory-safety bugs, but does not prove that an exchange sequence is complete, that a risk check is correct, or that a deadline is met. Ownership can help enforce one writer per book; protocol correctness still requires explicit invariants.</p>
+<h2 id="3-follow-one-market-event-through-the-system">3. Follow one market event through the system</h2>
+<pre><code class="language-text">Exchange              Local machine                                        Exchange
+   |                       |                                                   ^
+   | market event          v                                                   |
+   +----&gt; NIC RX -&gt; RX queue -&gt; decode -&gt; sequence check -&gt; book -&gt; strategy     |
+                                                                  |            |
+                                                               risk check      |
+                                                                  |            |
+                                 NIC TX &lt;- TX queue &lt;- encode &lt;- order intent --+
+</code></pre>
+<p><strong>RX</strong> means receive. <strong>TX</strong> means transmit. The actual system may have additional queues, sessions, routing layers, and risk components.</p>
+<p>For a chosen local boundary:</p>
+<div class="equation">L_local = t_TX boundary − t_RX boundary</div>
+<p>A measurement from application receive to socket-write return is different from NIC hardware receive to NIC hardware transmit. A successful write does not establish wire transmission, exchange acceptance, or an execution. Give every chart its actual boundary.</p>
+<p>A useful accounting model is:</p>
+<div class="equation">L = L_queue + L_processing + L_output waiting</div>
+<p>This is an accounting decomposition using non-overlapping intervals. Within processing, cache delays, execution, and recovery can overlap; summing every hardware counter’s estimated cost can double-count time.</p>
+<p>Imagine a hypothetical 1,000 ns local budget. A 5 ns disruption is 0.5% of that budget. It can still have an outsized consequence if it delays a dependency or contributes to backlog near saturation. The correct question is how it affects measured decisions and their tails under the expected traffic, not whether a particular number of nanoseconds sounds large.</p>
+<h2 id="4-dimension-1-control-flow-recovery-and-refill">4. Dimension 1 — control-flow recovery and refill</h2>
+<h3 id="4-1-what-the-processor-predicts">4.1 What the processor predicts</h3>
+<p>A branch chooses where execution continues. A processor predicts the direction or target so that it can keep work in flight before the actual answer is ready.</p>
+<pre><code class="language-rust"><span class="k">fn</span><span class="w"> </span><span class="nf">accepts</span><span class="p">(</span><span class="n">qty</span><span class="p">:</span><span class="w"> </span><span class="kt">u64</span><span class="p">,</span><span class="w"> </span><span class="n">limit</span><span class="p">:</span><span class="w"> </span><span class="kt">u64</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="kt">bool</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="n">qty</span><span class="w"> </span><span class="o">&lt;=</span><span class="w"> </span><span class="n">limit</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="kc">true</span>
+<span class="w">    </span><span class="p">}</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="kc">false</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre>
+<p>This source-level <code>if</code> may compile to a comparison that produces a Boolean without a branch. Source code alone cannot tell you whether the processor will predict a conditional jump. Compiler optimization, target features, and context determine the machine instructions.</p>
+<p>A conceptual pipeline looks like this:</p>
+<pre><code class="language-text">Fetch -&gt; Decode -&gt; Rename -&gt; Dispatch -&gt; Execute -&gt; Retire
+                    |                       |
+            physical registers      branches resolve here
+
+Prediction: condition is true
+    older work | branch | speculative A | speculative B | speculative C
+                         ---------------- discard --------------------
+Actual: condition is false
+    older work | branch | redirect -&gt; fetch correct path -&gt; useful retirement
+</code></pre>
+<p><strong>Rename</strong> maps program-visible registers to internal storage. <strong>Dispatch</strong> sends work toward execution resources. <strong>Retire</strong> commits completed instructions in program order. The diagram is conceptual: it omits queues, issue, multiple execution units, and model-specific stages.</p>
+<p>On a wrong prediction, younger wrong-path instructions cannot retire as program results. Older valid instructions can still complete. The CPU redirects execution and rebuilds useful work. This is not a wholesale reset of every stage, cache, or predictor. Intel describes the distinction between architectural results and speculative effects in its <a href="https://www.intel.com/content/www/us/en/developer/articles/technical/software-security-guidance/technical-documentation/hardware-behavior-related-to-speculative-execution.html">speculative-execution documentation</a>.</p>
+<p><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 330" role="img" aria-label="A wrong prediction discards speculative work"><style>text{font-family:system-ui,sans-serif;fill:#163047}.label{font-size:18px;font-weight:650}.small{font-size:15px}.title{font-size:24px;font-weight:700}</style><defs><marker id="cpu-recovery-arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#497084"/></marker></defs><rect width="1000" height="330" rx="16" fill="#f0f6f8"/><text x="30" y="38" class="title">A wrong prediction discards speculative work</text><text x="30" y="65" class="small">Conceptual stages; real processors overlap execution and contain more structures.</text><rect x="30" y="100" width="165" height="75" rx="8" fill="#d9ece9"/><text x="112.5" y="130" text-anchor="middle" class="label">Fetch</text><text x="112.5" y="154" text-anchor="middle" class="small">choose address</text><path d="M198,137 L217,137" stroke="#497084" stroke-width="2" fill="none" marker-end="url(#cpu-recovery-arrow)"/><rect x="223" y="100" width="165" height="75" rx="8" fill="#d9ece9"/><text x="305.5" y="130" text-anchor="middle" class="label">Decode</text><text x="305.5" y="154" text-anchor="middle" class="small">read instructions</text><path d="M391,137 L410,137" stroke="#497084" stroke-width="2" fill="none" marker-end="url(#cpu-recovery-arrow)"/><rect x="416" y="100" width="165" height="75" rx="8" fill="#d9ece9"/><text x="498.5" y="130" text-anchor="middle" class="label">Rename</text><text x="498.5" y="154" text-anchor="middle" class="small">map registers</text><path d="M584,137 L603,137" stroke="#497084" stroke-width="2" fill="none" marker-end="url(#cpu-recovery-arrow)"/><rect x="609" y="100" width="165" height="75" rx="8" fill="#d9ece9"/><text x="691.5" y="130" text-anchor="middle" class="label">Execute</text><text x="691.5" y="154" text-anchor="middle" class="small">resolve branch</text><path d="M777,137 L796,137" stroke="#497084" stroke-width="2" fill="none" marker-end="url(#cpu-recovery-arrow)"/><rect x="802" y="100" width="165" height="75" rx="8" fill="#d9ece9"/><text x="884.5" y="130" text-anchor="middle" class="label">Retire</text><text x="884.5" y="154" text-anchor="middle" class="small">commit results</text><rect x="415" y="204" width="545" height="45" rx="8" fill="#f8d9cf"/><text x="432" y="233" class="label">Wrong-path younger work is squashed</text><path d="M690,178 L690,197" stroke="#497084" stroke-width="2" fill="none" marker-end="url(#cpu-recovery-arrow)"/><path d="M690,253 L690,282 L110,282 L110,184" fill="none" stroke="#497084" stroke-width="2" marker-end="url(#cpu-recovery-arrow)"/><text x="300" y="309" class="small">Redirect and rebuild useful work; caches are not reset</text></svg></p>
+<h3 id="4-2-cycles-frequency-and-honest-arithmetic">4.2 Cycles, frequency, and honest arithmetic</h3>
+<p>A <strong>cycle</strong> is one tick of a clock domain. For a constant illustrative frequency:</p>
+<div class="equation">nanoseconds = cycles / GHz</div>
+<table>
+<thead>
+<tr>
+<th>Assumed penalty</th>
+<th style="text-align:right">At 4 GHz</th>
+<th style="text-align:right">At 5 GHz</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>15 cycles</td>
+<td style="text-align:right">3.75 ns</td>
+<td style="text-align:right">3.00 ns</td>
+</tr>
+<tr>
+<td>20 cycles</td>
+<td style="text-align:right">5.00 ns</td>
+<td style="text-align:right">4.00 ns</td>
+</tr>
+<tr>
+<td>25 cycles</td>
+<td style="text-align:right">6.25 ns</td>
+<td style="text-align:right">5.00 ns</td>
+</tr>
+</tbody>
+</table>
+<p>Thus 15–20 cycles over 4–5 GHz spans <strong>3–5 ns</strong>, not a universal 3.5–5 ns. These are unit conversions, not measurements or promises about a current CPU.</p>
+<p>Modern frequency changes complicate conversions. An invariant timestamp counter, when present, normally advances at a reference rate; it is not a direct count of changing core cycles. Keep elapsed time, TSC ticks, and PMU core-cycle counts distinct. Instruction-specific timing requirements are documented in the Intel manuals’ <a href="https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html">RDTSC and RDTSCP entries</a>.</p>
+<h3 id="4-3-why-pipeline-depth-is-not-enough">4.3 Why pipeline depth is not enough</h3>
+<p>A branch dependent on a cache-missing load cannot resolve until the relevant data arrives. The wrong prediction may keep useless work flowing during that interval. After redirection, an instruction-cache or instruction-translation miss can delay the new path further. Conversely, independent older work may hide some recovery cost.</p>
+<p>Define separate intervals if an investigation requires them:</p>
+<ol>
+<li>Branch encountered to branch resolved.</li>
+<li>Resolution to correct-path work available.</li>
+<li>Correct-path work available to its useful retirement.</li>
+</ol>
+<p>Ordinary application timing rarely exposes those intervals directly. Use model-specific performance analysis to interpret recovery-related events. Do not infer them from a simplified pipeline diagram, and do not add a standalone “refill penalty” to a measurement that already includes refill.</p>
+<h3 id="4-4-translate-this-into-rust-choices">4.4 Translate this into Rust choices</h3>
+<p>Begin with a compact common path and a clearly expressed exceptional path:</p>
+<pre><code class="language-rust"><span class="cp">#[cold]</span>
+<span class="k">fn</span><span class="w"> </span><span class="nf">report_gap</span><span class="p">(</span><span class="n">expected</span><span class="p">:</span><span class="w"> </span><span class="kt">u64</span><span class="p">,</span><span class="w"> </span><span class="n">got</span><span class="p">:</span><span class="w"> </span><span class="kt">u64</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="c1">// In production: record a bounded event for another component.</span>
+<span class="w">    </span><span class="c1">// Avoid synchronous formatting or disk I/O in the packet loop.</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">_</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">(</span><span class="n">expected</span><span class="p">,</span><span class="w"> </span><span class="n">got</span><span class="p">);</span>
+<span class="p">}</span>
+</code></pre>
+<p><code>#[cold]</code> expresses that a function is expected to be called rarely. It is a compiler hint, not a command to the CPU’s predictor. C++ <code>[[likely]]</code> syntax is not Rust syntax. See Rust’s <a href="https://doc.rust-lang.org/stable/core/attribute.cold.html"><code>cold</code> documentation</a>.</p>
+<p>Next investigate:</p>
+<ul>
+<li>Data layouts that reduce pointer chasing and branch-dependent cache misses.</li>
+<li>Predictable protocol dispatch without needless virtual calls.</li>
+<li>Separating detailed error handling from the common instruction stream.</li>
+<li>PGO trained on representative traffic, including regime changes and exceptional cases.</li>
+</ul>
+<p>Profile-guided optimization collects workload information and uses it in compilation. A quiet-session profile can misrepresent an opening auction or recovery workload; compare the resulting binary on independent replays. See the <a href="https://doc.rust-lang.org/rustc/profile-guided-optimization.html">rustc PGO guide</a>.</p>
+<p><strong>Do not remove essential sequence, bounds, or risk checks to save a branch.</strong> A conditional move can also create dependencies or perform extra work. A branchless rewrite must win in generated code and representative measurements while preserving behavior.</p>
+<h3 id="4-5-lab-measure-a-workload-not-a-mythical-fixed-penalty">4.5 Lab: measure a workload, not a mythical fixed penalty</h3>
+<p>Run the supplied lab from its directory:</p>
+<pre><code class="language-sh">cargo<span class="w"> </span>run<span class="w"> </span>--release<span class="w"> </span>--offline<span class="w"> </span>--<span class="w"> </span>branch<span class="w"> </span>same
+cargo<span class="w"> </span>run<span class="w"> </span>--release<span class="w"> </span>--offline<span class="w"> </span>--<span class="w"> </span>branch<span class="w"> </span>alternating
+cargo<span class="w"> </span>run<span class="w"> </span>--release<span class="w"> </span>--offline<span class="w"> </span>--<span class="w"> </span>branch<span class="w"> </span>random
+</code></pre>
+<p>Each mode processes the same number of values using different low-bit patterns. Alternation can be learnable; a fixed pseudorandom stream is not guaranteed to defeat a particular predictor. The data is prepared outside the timed region. Warm-up runs precede 40 timed batches.</p>
+<p>The executable reports <strong>batch-average nanoseconds per item</strong>, including loop work and <code>black_box</code> overhead. This is a throughput-oriented experiment. Its slowest batch is not the worst individual event. Rust’s <a href="https://doc.rust-lang.org/std/hint/fn.black_box.html"><code>black_box</code></a> is a best-effort optimization barrier, not a hardware fence or a guarantee about the final instruction sequence.</p>
+<p>Inspect the optimized code:</p>
+<pre><code class="language-sh">cargo<span class="w"> </span>rustc<span class="w"> </span>--release<span class="w"> </span>--offline<span class="w"> </span>--bin<span class="w"> </span>pipeline-flush-lab<span class="w"> </span>--<span class="w"> </span>--emit<span class="o">=</span>asm
+</code></pre>
+<p>Find <code>branch_work</code> in <code>target/release/deps/*.s</code>. A conditional jump that chooses a data path matters; the loop-back jump alone does not establish a branch-prediction experiment. If the compiler uses conditional moves or vectorization, explain the observed result accordingly.</p>
+<p>On a Linux host with permitted hardware-counter access:</p>
+<pre><code class="language-sh">perf<span class="w"> </span>stat<span class="w"> </span>-r<span class="w"> </span><span class="m">5</span><span class="w"> </span>-e<span class="w"> </span>cycles,instructions,branches,branch-misses<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>./target/release/pipeline-flush-lab<span class="w"> </span>branch<span class="w"> </span>random
+</code></pre>
+<p>Run each mode separately and repeat with a larger timing workload if setup dominates. Whole-process counters include preparation, warm-up, and reporting. For stronger attribution, bracket the processing region with a profiling harness. Compute <code>IPC = instructions / cycles</code> and <code>branch miss rate = branch-misses / branches</code>; neither directly measures a single flush penalty. See <a href="https://man7.org/linux/man-pages/man1/perf-stat.1.html">perf-stat(1)</a> and the processor-specific <a href="https://perfmon-events.intel.com/">Intel event catalog</a>.</p>
+<h2 id="5-dimension-2-ordering-fences-and-serialization">5. Dimension 2 — ordering, fences, and serialization</h2>
+<h3 id="5-1-why-ordering-exists">5.1 Why ordering exists</h3>
+<p>Suppose one thread builds a quote and another uses it. Seeing a flag that says “ready” must mean the payload is available too. The source-code order, compiler transformations, and hardware memory ordering must agree with that contract.</p>
+<pre><code class="language-text">Producer core                           Consumer core
+write payload
+publish READY with Release  ----------&gt;  observe READY with Acquire
+                                        read the published payload
+</code></pre>
+<p>An Acquire load must observe the corresponding Release publication, or an applicable release sequence, for that synchronization to apply. Merely placing an Acquire instruction somewhere in a loop does not make arbitrary shared data safe.</p>
+<h3 id="5-2-keep-mechanisms-distinct">5.2 Keep mechanisms distinct</h3>
+<table>
+<thead>
+<tr>
+<th>Mechanism</th>
+<th>Main purpose</th>
+<th>What you must not assume</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>LFENCE</code></td>
+<td>Intel load ordering; also documented execution-ordering uses</td>
+<td>That previous stores have all become globally visible</td>
+</tr>
+<tr>
+<td><code>SFENCE</code></td>
+<td>Store ordering, including relevant weakly ordered store cases</td>
+<td>That all loads and instruction execution are fully serialized</td>
+</tr>
+<tr>
+<td><code>MFENCE</code></td>
+<td>Ordering of prior and subsequent loads and stores as specified</td>
+<td>That it flushes all caches or is identical to CPUID</td>
+</tr>
+<tr>
+<td><code>CPUID</code></td>
+<td>Identification plus serializing behavior</td>
+<td>That its timing is fixed, especially in virtual machines</td>
+</tr>
+<tr>
+<td>Context switch</td>
+<td>OS scheduling and architecture-specific state transition</td>
+<td>That it is a memory-fence API or always clears every cache and TLB</td>
+</tr>
+<tr>
+<td>Rust atomic ordering</td>
+<td>A language-level concurrency guarantee</td>
+<td>That each atomic operation emits one particular x86 fence</td>
+</tr>
+</tbody>
+</table>
+<p>Instruction details, memory types, and vendor behavior matter. The table summarizes semantics, not a performance table. Consult Intel’s <a href="https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html">instruction reference for LFENCE, SFENCE, MFENCE, and CPUID</a> for the target platform.</p>
+<p>Fence delays depend on outstanding work. A fence placed behind many stores can expose waiting that an empty-loop benchmark does not show. Measure the actual publication pattern rather than assuming an instruction’s isolated timing predicts the application impact.</p>
+<h3 id="5-3-a-safe-one-shot-rust-publication-example">5.3 A safe, one-shot Rust publication example</h3>
+<pre><code class="language-rust"><span class="k">use</span><span class="w"> </span><span class="n">std</span><span class="p">::</span><span class="n">sync</span><span class="p">::</span><span class="n">atomic</span><span class="p">::{</span><span class="n">AtomicBool</span><span class="p">,</span><span class="w"> </span><span class="n">AtomicU64</span><span class="p">,</span><span class="w"> </span><span class="n">Ordering</span><span class="p">};</span>
+<span class="k">use</span><span class="w"> </span><span class="n">std</span><span class="p">::</span><span class="n">thread</span><span class="p">;</span>
+
+<span class="k">struct</span><span class="w"> </span><span class="nc">Published</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">qty</span><span class="p">:</span><span class="w"> </span><span class="nc">AtomicU64</span><span class="p">,</span>
+<span class="w">    </span><span class="n">ready</span><span class="p">:</span><span class="w"> </span><span class="nc">AtomicBool</span><span class="p">,</span>
+<span class="p">}</span>
+
+<span class="k">fn</span><span class="w"> </span><span class="nf">main</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">p</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Published</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">qty</span><span class="p">:</span><span class="w"> </span><span class="nc">AtomicU64</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="mi">0</span><span class="p">),</span>
+<span class="w">        </span><span class="n">ready</span><span class="p">:</span><span class="w"> </span><span class="nc">AtomicBool</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="kc">false</span><span class="p">),</span>
+<span class="w">    </span><span class="p">};</span>
+<span class="w">    </span><span class="n">thread</span><span class="p">::</span><span class="n">scope</span><span class="p">(</span><span class="o">|</span><span class="n">scope</span><span class="o">|</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">producer</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="o">&amp;</span><span class="n">p</span><span class="p">;</span>
+<span class="w">        </span><span class="n">scope</span><span class="p">.</span><span class="n">spawn</span><span class="p">(</span><span class="k">move</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="n">producer</span><span class="p">.</span><span class="n">qty</span><span class="p">.</span><span class="n">store</span><span class="p">(</span><span class="mi">42</span><span class="p">,</span><span class="w"> </span><span class="n">Ordering</span><span class="p">::</span><span class="n">Relaxed</span><span class="p">);</span>
+<span class="w">            </span><span class="n">producer</span><span class="p">.</span><span class="n">ready</span><span class="p">.</span><span class="n">store</span><span class="p">(</span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="n">Ordering</span><span class="p">::</span><span class="n">Release</span><span class="p">);</span>
+<span class="w">        </span><span class="p">});</span>
+<span class="w">        </span><span class="k">while</span><span class="w"> </span><span class="o">!</span><span class="n">p</span><span class="p">.</span><span class="n">ready</span><span class="p">.</span><span class="n">load</span><span class="p">(</span><span class="n">Ordering</span><span class="p">::</span><span class="n">Acquire</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="n">std</span><span class="p">::</span><span class="n">hint</span><span class="p">::</span><span class="n">spin_loop</span><span class="p">();</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">        </span><span class="fm">assert_eq!</span><span class="p">(</span><span class="n">p</span><span class="p">.</span><span class="n">qty</span><span class="p">.</span><span class="n">load</span><span class="p">(</span><span class="n">Ordering</span><span class="p">::</span><span class="n">Relaxed</span><span class="p">),</span><span class="w"> </span><span class="mi">42</span><span class="p">);</span>
+<span class="w">    </span><span class="p">});</span>
+<span class="p">}</span>
+</code></pre>
+<p>The payload is atomic too, keeping the example entirely in safe Rust. The producer writes exactly once and never overwrites it. After observing <code>ready == true</code>, the consumer can observe that publication. <code>spin_loop</code> is a processor hint, not a yield, a timeout, or a progress guarantee.</p>
+<p>This is not a reusable queue. Resetting the flag and overwriting the payload introduces a new synchronization protocol. A multi-field quote also needs a coherent snapshot protocol; separate atomic fields alone do not guarantee they all describe the same update.</p>
+<p>The correct ordering is the weakest ordering for which you can explain and validate the complete synchronization proof. Start from clear correctness, then review assembly and measurements. Rust defines the guarantees in <a href="https://doc.rust-lang.org/std/sync/atomic/enum.Ordering.html"><code>Ordering</code></a>. Avoid sprinkling inline assembly fences into an otherwise unproven algorithm.</p>
+<h3 id="5-4-where-beginners-should-stop-optimizing">5.4 Where beginners should stop optimizing</h3>
+<p>Do not weaken orderings because two variants happened to pass a stress test. Tests cover executions you observed; the language model describes executions you must allow for. Use established queue implementations, concurrency-model testing, and expert review before introducing custom lock-free storage with <code>UnsafeCell</code>, raw pointers, or manual memory reclamation.</p>
+<p>Memory-mapped device registers and DMA add another boundary: Rust atomics for ordinary shared memory are not a substitute for a NIC API’s ownership, barriers, and completion rules.</p>
+<h2 id="6-dimension-3-cache-ownership-and-locality">6. Dimension 3 — cache ownership and locality</h2>
+<h3 id="6-1-the-cache-line-is-the-sharing-unit">6.1 The cache line is the sharing unit</h3>
+<p>A cache holds chunks of memory called cache lines. A common x86 line size is 64 bytes, but verify the actual platform. Two independent variables can occupy the same line. If separate cores repeatedly write them, coherence can move write ownership between cores even though the program sees no logical sharing. This is <strong>false sharing</strong>.</p>
+<pre><code class="language-text">One shared cache line
++-----------------------------+-----------------------------+
+| RX thread&#39;s packet counter  | TX thread&#39;s order counter   |
++-----------------------------+-----------------------------+
+          Core A writes                 Core B writes
+                ownership &lt;-----------&gt; ownership
+
+Separate lines
++-----------------------------+   +-----------------------------+
+| RX counter + padding        |   | TX counter + padding        |
++-----------------------------+   +-----------------------------+
+          mostly Core A                    mostly Core B
+</code></pre>
+<p>Intel documents the locality problem and padding strategy in its <a href="https://www.intel.com/content/dam/develop/external/us/en/documents/gdma-2-165938.pdf">false-sharing guidance</a>.</p>
+<h3 id="6-2-rfo-is-about-writing">6.2 RFO is about writing</h3>
+<p>If a core needs write permission for a line it does not own appropriately, a coherence transaction may acquire that permission and invalidate competing copies. An ordinary read may be served from a cache, another core, or memory, depending on the state and topology. A miss does not necessarily imply a DRAM trip. Intel’s <a href="https://perfmon-events.intel.com/platforms/icelakex/offcore-events/offcore/">offcore event descriptions</a> explicitly distinguish demand data reads and ownership requests, including responses from another core’s modified line.</p>
+<p>A wrong-path load can bring a cache line into a cache. A squashed branch does not mean that line disappears. Conversely, another core’s legitimate write can invalidate a line while the local core has had no branch misprediction. Treat control-flow recovery and coherence traffic as separate hypotheses.</p>
+<h3 id="6-3-express-an-ownership-friendly-layout-in-rust">6.3 Express an ownership-friendly layout in Rust</h3>
+<pre><code class="language-rust"><span class="k">use</span><span class="w"> </span><span class="n">std</span><span class="p">::</span><span class="n">sync</span><span class="p">::</span><span class="n">atomic</span><span class="p">::</span><span class="n">AtomicU64</span><span class="p">;</span>
+
+<span class="cp">#[repr(align(64))]</span>
+<span class="k">struct</span><span class="w"> </span><span class="nc">PaddedCounter</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">value</span><span class="p">:</span><span class="w"> </span><span class="nc">AtomicU64</span><span class="p">,</span>
+<span class="p">}</span>
+
+<span class="k">struct</span><span class="w"> </span><span class="nc">Counters</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">received</span><span class="p">:</span><span class="w"> </span><span class="nc">PaddedCounter</span><span class="p">,</span>
+<span class="w">    </span><span class="n">transmitted</span><span class="p">:</span><span class="w"> </span><span class="nc">PaddedCounter</span><span class="p">,</span>
+<span class="p">}</span>
+</code></pre>
+<p>On a platform with 64-byte lines, this gives these fields separate aligned storage. The size of each aligned wrapper is rounded to its alignment. It does not cure contention when every core updates <code>received</code>, and a different platform may need a different layout.</p>
+<p>A stronger design often keeps counters local to the owner, then publishes summaries at an explicit cadence. Frequent monitoring reads can also change cache-sharing behavior. Include telemetry in the realistic benchmark.</p>
+<p>For the order book, prefer a single owner per partition when practical. Partition by an actual sequencing and strategy boundary: symbol partitioning is unsafe if an invariant depends on several symbols updating together. Keep NIC queues, processing cores, and allocations on the intended NUMA node, and measure the added communication cost when splitting stages across cores.</p>
+<h2 id="7-dimension-4-queues-draining-and-transmission">7. Dimension 4 — queues, draining, and transmission</h2>
+<h3 id="7-1-why-a-tiny-stall-can-create-a-long-tail">7.1 Why a tiny stall can create a long tail</h3>
+<p>Let arrival rate be <code>λ</code> events/second and service capacity be <code>μ</code> events/second. If a consumer pauses for <code>s</code> seconds, a simple fluid model estimates extra backlog:</p>
+<div class="equation">B ≈ λ × s</div>
+<p>After service resumes, the backlog shrinks only at the spare capacity:</p>
+<div class="equation">T_catch-up ≈ B / (μ − λ), provided μ &gt; λ</div>
+<p>These are approximations with steady arrivals, constant service capacity, and adequate buffers. They describe backlog clearance, not every individual event’s waiting time.</p>
+<p>Worked example: <code>λ = 8 million/s</code>, <code>μ = 10 million/s</code>, and a <code>2 µs</code> pause. About 16 events accumulate. The spare capacity is 2 million/s, so clearing the extra backlog takes about 8 µs after service resumes. At <code>λ &gt;= μ</code>, sustained backlog cannot clear without reducing arrivals or increasing effective capacity.</p>
+<pre><code class="language-text">Time --------------------------------------------------------------&gt;
+Arrivals:    | | | | | | | | | | | | | | | | | | | |
+Consumer:    work work [    PAUSE    ] work work work work
+Queue:       small     grows grows   shrinks only with spare capacity
+
+A brief stall affects later events because they arrive before prior work finishes.
+</code></pre>
+<p>Little’s law, <code>average queued work = arrival rate × average queue wait</code>, applies to suitable stable observation boundaries. It is not a formula for p99.99 or a proof that a full queue will recover.</p>
+<p><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 345" role="img" aria-label="A short pause delays later arrivals"><style>text{font-family:system-ui,sans-serif;fill:#163047}.label{font-size:18px;font-weight:650}.small{font-size:15px}.title{font-size:24px;font-weight:700}</style><defs><marker id="queue-backlog-arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#497084"/></marker></defs><rect width="1000" height="345" rx="16" fill="#f0f6f8"/><text x="30" y="38" class="title">A short pause delays later arrivals</text><text x="30" y="65" class="small">Qualitative diagram; not a measured latency trace.</text><text x="40" y="115" class="label">Work arrives</text><rect x="230" y="95" width="22" height="30" rx="4" fill="#91c6be"/><rect x="270" y="95" width="22" height="30" rx="4" fill="#91c6be"/><rect x="310" y="95" width="22" height="30" rx="4" fill="#91c6be"/><rect x="350" y="95" width="22" height="30" rx="4" fill="#91c6be"/><rect x="390" y="95" width="22" height="30" rx="4" fill="#91c6be"/><rect x="430" y="95" width="22" height="30" rx="4" fill="#91c6be"/><rect x="470" y="95" width="22" height="30" rx="4" fill="#91c6be"/><rect x="510" y="95" width="22" height="30" rx="4" fill="#91c6be"/><rect x="550" y="95" width="22" height="30" rx="4" fill="#91c6be"/><rect x="590" y="95" width="22" height="30" rx="4" fill="#91c6be"/><rect x="630" y="95" width="22" height="30" rx="4" fill="#91c6be"/><rect x="670" y="95" width="22" height="30" rx="4" fill="#91c6be"/><rect x="710" y="95" width="22" height="30" rx="4" fill="#91c6be"/><rect x="750" y="95" width="22" height="30" rx="4" fill="#91c6be"/><rect x="790" y="95" width="22" height="30" rx="4" fill="#91c6be"/><rect x="830" y="95" width="22" height="30" rx="4" fill="#91c6be"/><rect x="870" y="95" width="22" height="30" rx="4" fill="#91c6be"/><rect x="910" y="95" width="22" height="30" rx="4" fill="#91c6be"/><text x="40" y="180" class="label">Consumer</text><rect x="230" y="150" width="155" height="45" rx="5" fill="#91c6be"/><rect x="400" y="150" width="190" height="45" rx="5" fill="#f1b5a1"/><rect x="605" y="150" width="325" height="45" rx="5" fill="#91c6be"/><text x="275" y="180" class="label">Work</text><text x="460" y="180" class="label">Pause</text><text x="690" y="180" class="label">Resume</text><text x="40" y="248" class="label">Extra backlog</text><path d="M230,270 L400,270 L590,220 L930,270" fill="none" stroke="#be6b4e" stroke-width="4"/><text x="325" y="315" class="small">Backlog clears only if service capacity exceeds the continuing arrival rate</text></svg></p>
+<h3 id="7-2-buffer-drain-time-is-not-simply-queue-capacity">7.2 Buffer drain time is not simply queue capacity</h3>
+<p>If <code>N</code> queued packets each require average discard cost <code>d</code>, then <code>N × d</code> estimates the effort to discard that fixed set. New packets may continue arriving, so reaching a useful boundary takes longer. Actual work may involve descriptor handling, parsing, buffer recycling, and DMA-completion rules.</p>
+<p><strong>Packet</strong>, <strong>message</strong>, and <strong>update</strong> are not interchangeable units. One packet can contain multiple exchange messages. Measure both packet and message rates and follow the protocol’s sequencing unit.</p>
+<p>DPDK and EF_VI are different APIs with different resource rules. A typical high-performance NIC PMD polls receive descriptors in user space, while DPDK also offers drivers with other data paths. DPDK’s <a href="https://doc.dpdk.org/guides/prog_guide/ethdev/ethdev.html">poll-mode guide</a> describes run-to-completion and multi-stage processing. Kernel bypass changes the path; it does not remove finite queues or guarantee low tail latency.</p>
+<p>Use bounded polling work:</p>
+<pre><code class="language-text">repeat:
+    receive up to B available packets
+    process every returned packet according to protocol rules
+    perform bounded output work
+    check deadlines, session health, and shutdown signals
+</code></pre>
+<p>“Up to B” means process what is available; it does not mean wait until B packets arrive. Tune B by measuring both service capacity and the delay imposed on other work. A huge burst can reduce overhead per packet while delaying timers and output service.</p>
+<h3 id="7-3-you-cannot-discard-arbitrary-incremental-updates">7.3 You cannot discard arbitrary incremental updates</h3>
+<p>Consider these simplified messages:</p>
+<pre><code class="language-text">seq 100: add order X, quantity 10
+seq 101: execute 4 of order X
+seq 102: cancel the remaining quantity of X
+</code></pre>
+<p>Reading only seq 102 cannot reconstruct what happened if the preceding state is unknown. Even “old” updates may be prerequisites for a correct current state.</p>
+<p>A feed of independent complete snapshots may permit replacing an older snapshot with a newer validated one. An incremental feed usually requires complete ordered processing or an authoritative snapshot plus correctly aligned replay. Instrument timestamps alone cannot authorize coalescing; use the protocol specification and the application’s consumers.</p>
+<p>Track oldest-event age, queue depth, gaps, buffer exhaustion, and time with trading disabled. A larger queue can reduce drops while allowing dangerously old decisions. Capacity needs a freshness policy as well as a memory budget.</p>
+<h3 id="7-4-tcp-nodelay-removes-one-waiting-rule">7.4 TCP_NODELAY removes one waiting rule</h3>
+<p>TCP is a reliable ordered byte stream. Nagle’s algorithm can hold small writes while previously sent data remains unacknowledged, subject to its rules and available data. This can interact with delayed acknowledgments. Setting <code>TCP_NODELAY</code> removes that algorithm’s buffering behavior. It does not bypass congestion control, receiver flow control, socket queues, NIC queues, or retransmission recovery. Linux also has <code>TCP_CORK</code>, whose interaction must be understood. See <a href="https://man7.org/linux/man-pages/man7/tcp.7.html">tcp(7)</a>.</p>
+<pre><code class="language-text">Rust caller -&gt; optional BufWriter -&gt; socket send queue -&gt; TCP -&gt; NIC TX -&gt; wire
+                   flush()          NODELAY affects one TCP rule
+</code></pre>
+<p>For a baseline TCP connection:</p>
+<pre><code class="language-rust"><span class="k">use</span><span class="w"> </span><span class="n">std</span><span class="p">::{</span><span class="n">io</span><span class="p">,</span><span class="w"> </span><span class="n">net</span><span class="p">::</span><span class="n">TcpStream</span><span class="p">};</span>
+
+<span class="k">fn</span><span class="w"> </span><span class="nf">configure</span><span class="p">(</span><span class="n">stream</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">TcpStream</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">io</span><span class="p">::</span><span class="nb">Result</span><span class="o">&lt;</span><span class="p">()</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">stream</span><span class="p">.</span><span class="n">set_nodelay</span><span class="p">(</span><span class="kc">true</span><span class="p">)</span><span class="o">?</span><span class="p">;</span>
+<span class="w">    </span><span class="n">stream</span><span class="p">.</span><span class="n">set_nonblocking</span><span class="p">(</span><span class="kc">true</span><span class="p">)</span><span class="o">?</span><span class="p">;</span>
+<span class="w">    </span><span class="nb">Ok</span><span class="p">(())</span>
+<span class="p">}</span>
+</code></pre>
+<p>Connection setup, address resolution, and session login belong outside the latency-critical event loop. This example only configures an already connected stream. Rust exposes the options through <a href="https://doc.rust-lang.org/std/net/struct.TcpStream.html"><code>TcpStream</code></a>.</p>
+<p><code>BufWriter::flush</code> pushes its buffered bytes to the underlying writer. It does not wait for exchange acceptance. Calling <code>flush</code> on a TCP writer is not an application-level acknowledgment or a general wire-completion primitive.</p>
+<h3 id="7-5-partial-writes-are-part-of-correctness">7.5 Partial writes are part of correctness</h3>
+<p>A nonblocking <code>write</code> may accept only a prefix of a frame. It may also return <code>WouldBlock</code>. If you retry the entire frame after a partial write, you duplicate bytes. If you discard the unsent suffix, you truncate the stream. <code>write_all</code> does not give the caller a progress offset when it returns an error, so naïve retries on a nonblocking stream are especially problematic. See Rust’s <a href="https://doc.rust-lang.org/std/io/trait.Write.html"><code>Write</code> contract</a>.</p>
+<p>The lab’s <code>Pending&lt;N&gt;</code> owns one fixed-capacity frame and an offset:</p>
+<pre><code class="language-text">Frame:   [ a b c d e f ]
+Accepted:[ a b ]
+Pending:      [ c d e f ]
+Next write starts at c, with the same frame still owned by Pending.
+</code></pre>
+<p>Usage inside a component that owns the connection:</p>
+<pre><code class="language-rust"><span class="k">use</span><span class="w"> </span><span class="n">std</span><span class="p">::</span><span class="n">io</span><span class="p">;</span>
+<span class="k">use</span><span class="w"> </span><span class="n">std</span><span class="p">::</span><span class="n">net</span><span class="p">::</span><span class="n">TcpStream</span><span class="p">;</span>
+<span class="k">use</span><span class="w"> </span><span class="n">pipeline_flush_lab</span><span class="p">::</span><span class="n">Pending</span><span class="p">;</span>
+
+<span class="k">fn</span><span class="w"> </span><span class="nf">output_turn</span><span class="p">(</span><span class="n">pending</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">mut</span><span class="w"> </span><span class="n">Pending</span><span class="o">&lt;</span><span class="mi">4096</span><span class="o">&gt;</span><span class="p">,</span><span class="w"> </span><span class="n">stream</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">mut</span><span class="w"> </span><span class="n">TcpStream</span><span class="p">)</span>
+<span class="w">    </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">io</span><span class="p">::</span><span class="nb">Result</span><span class="o">&lt;</span><span class="kt">bool</span><span class="o">&gt;</span>
+<span class="p">{</span>
+<span class="w">    </span><span class="n">pending</span><span class="p">.</span><span class="n">step</span><span class="p">(</span><span class="n">stream</span><span class="p">,</span><span class="w"> </span><span class="mi">4</span><span class="p">)</span><span class="w"> </span><span class="c1">// no more than four write attempts this turn</span>
+<span class="p">}</span>
+</code></pre>
+<p>The caller enqueues a fully encoded frame once. If <code>step</code> returns <code>Ok(false)</code>, keep the same pending state and return to the event loop. <code>Interrupted</code> consumes an attempt too, so repeated interruptions cannot create an unbounded loop inside this function. A call-count budget is not a nanosecond deadline, and the underlying stream must actually be nonblocking.</p>
+<p>Fatal socket errors require session recovery. Some bytes may already have reached the peer. Do not blindly replay an order on a fresh connection: reconcile exchange session sequence, client identifiers, and order status using the relevant protocol.</p>
+<h3 id="7-6-micro-batching-is-a-policy-with-a-deadline">7.6 Micro-batching is a policy with a deadline</h3>
+<p>Sending several already-ready messages together can amortize work. Waiting to build a batch adds intentional delay. A policy might submit when either <code>B</code> messages are ready or the oldest one reaches age <code>T</code>. It must also specify what happens if the output cannot progress.</p>
+<p>Under ideal timer-driven behavior, a batch interval T adds a wait ranging from roughly zero to T; actual scheduling and downstream backpressure can exceed T. Measure the oldest-message age and ensure the event loop checks the deadline frequently enough. Busy polling reserves CPU time and increases power use; it does not by itself enforce the deadline.</p>
+<h3 id="7-7-run-the-virtual-time-queue-experiment">7.7 Run the virtual-time queue experiment</h3>
+<pre><code class="language-sh">cargo<span class="w"> </span>run<span class="w"> </span>--release<span class="w"> </span>--offline<span class="w"> </span>--<span class="w"> </span>queue
+</code></pre>
+<p>The model schedules arrivals independently of completion. It processes 20,000 events with 30 ns service time and one 200 ns pause. One scenario has 100 ns between arrivals and recovers; the other has 20 ns between arrivals and remains overloaded. All reported values are <strong>simulated nanoseconds</strong>, not a machine benchmark.</p>
+<p>The stable scenario has only a few delayed events. Its p99 may remain unchanged while its maximum grows. That is why averages and a single percentile can conceal rare disruptions. The model ignores packetization, contention, changing service time, finite queue capacity, and drops; use it to understand the mechanism before measuring real traffic.</p>
+<h2 id="8-dimension-5-deterministic-state-recovery">8. Dimension 5 — deterministic state recovery</h2>
+<h3 id="8-1-define-the-invariant-before-the-fast-path">8.1 Define the invariant before the fast path</h3>
+<p>For this chapter’s simplified feed:</p>
+<blockquote>
+<p>The book may be used only when it represents a trusted snapshot plus every required subsequent update, in order, in the same session, through a known cutover sequence.</p>
+</blockquote>
+<p>A real exchange protocol may sequence a whole channel, several messages inside a packet, or separate sessions. Apply the invariant at that protocol’s scope. Redundant feeds, duplicates, out-of-order packets, and resets require documented normalization before application.</p>
+<pre><code class="language-text">                       expected next update
+                 +-------------------------------+
+                 v                               |
+             +--------+                          |
+             |  LIVE  | -------------------------+
+             +--------+
+                 |
+          gap / invalid event / session change
+                 v
+          +--------------+        timeout / overflow / invalid replay
+          |  RECOVERING  | &lt;----------------------------------------+
+          | trading off  |                                          |
+          +--------------+                                          |
+                 |                                                  |
+          trusted snapshot at S                                     |
+                 v                                                  |
+          +--------------+                                          |
+          | BUILD SHADOW | -&gt; replay S+1 ... H -&gt; validate ------------+
+          +--------------+                         |
+                                            complete and valid
+                                                   |
+                                              publish candidate
+                                                   v
+                                                  LIVE
+</code></pre>
+<p>The drawing is an original teaching state machine. It is not an exchange specification.</p>
+<p>A real example of snapshot plus buffered-message alignment appears in Nasdaq’s <a href="https://nasdaqtrader.com/content/technicalSupport/FAQs/Nasdaq_Glimpse_FAQ.pdf">GLIMPSE recovery FAQ</a>. Exact sequence interpretation and operational rules must come from the selected feed’s current specification, not from the miniature model.</p>
+<p><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 330" role="img" aria-label="Recovery is a correctness protocol"><style>text{font-family:system-ui,sans-serif;fill:#163047}.label{font-size:18px;font-weight:650}.small{font-size:15px}.title{font-size:24px;font-weight:700}</style><defs><marker id="state-recovery-arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#497084"/></marker></defs><rect width="1000" height="330" rx="16" fill="#f0f6f8"/><text x="30" y="38" class="title">Recovery is a correctness protocol</text><text x="30" y="65" class="small">Failure, overflow, or timeout keeps decisions disabled. Publication assumes a single owner.</text><rect x="30" y="115" width="265" height="85" rx="8" fill="#d9ece9"/><text x="162.5" y="145" text-anchor="middle" class="label">LIVE</text><text x="162.5" y="169" text-anchor="middle" class="small">decisions eligible</text><rect x="365" y="115" width="265" height="85" rx="8" fill="#f8d9cf"/><text x="497.5" y="145" text-anchor="middle" class="label">RECOVERING</text><text x="497.5" y="169" text-anchor="middle" class="small">decisions disabled</text><rect x="700" y="115" width="265" height="85" rx="8" fill="#dce7f6"/><text x="832.5" y="145" text-anchor="middle" class="label">BUILD + REPLAY</text><text x="832.5" y="169" text-anchor="middle" class="small">shadow candidate</text><path d="M299,157 L355,157" stroke="#497084" stroke-width="2" fill="none" marker-end="url(#state-recovery-arrow)"/><path d="M634,157 L690,157" stroke="#497084" stroke-width="2" fill="none" marker-end="url(#state-recovery-arrow)"/><text x="320" y="105" class="small">gap</text><text x="640" y="105" class="small">snapshot</text><path d="M830,205 L830,270 L160,270 L160,210" fill="none" stroke="#497084" stroke-width="2" marker-end="url(#state-recovery-arrow)"/><text x="350" y="297" class="label">Publish only after contiguous replay and validation</text></svg></p>
+<h3 id="8-2-why-panic-catching-is-not-a-rollback-protocol">8.2 Why panic catching is not a rollback protocol</h3>
+<p>If an exception or Rust panic occurs after half a book update, catching it does not undo mutations. Rust unwinding runs destructors; it is not a database transaction. The engine must either construct a valid replacement before publication, use an explicitly designed undo protocol, or mark the old state unusable and recover it. Recovery itself can fail and must have a defined next action.</p>
+<p>For a small model, copying the book to a candidate is straightforward. For a real book, a second preallocated book or bounded journal can be appropriate. Avoid allocating an unbounded recovery structure in response to a burst.</p>
+<h3 id="8-3-read-the-lab-s-engine-as-a-contract">8.3 Read the lab’s engine as a contract</h3>
+<p><code>Engine</code> holds an eight-level quantity array, a session identifier, the next expected sequence, and a <code>Mode</code>. Its normal ingestion behavior is:</p>
+<table>
+<thead>
+<tr>
+<th>Input while Live</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Same session, valid level, exactly expected sequence</td>
+<td>Apply one quantity assignment and advance sequence</td>
+</tr>
+<tr>
+<td>Same session, valid level, older sequence</td>
+<td>Classify as duplicate in this simplified model</td>
+</tr>
+<tr>
+<td>Future sequence, wrong session, invalid level, or sequence overflow</td>
+<td>Enter Recovering without applying that event</td>
+</tr>
+<tr>
+<td>Any update while Recovering</td>
+<td>Keep trading disabled; do not mutate the book</td>
+</tr>
+</tbody>
+</table>
+<p>Duplicate handling assumes normalization has already established a well-formed feed. The model does not retain historical payloads to prove duplicate content equality. It treats updates as level-quantity assignments, not a full order-by-order exchange protocol.</p>
+<p><code>recover</code> accepts a trusted snapshot through S, replay data, and a required cutover H. It disables trading first, builds a candidate, ignores replay entries already included in S, and requires exact consecutive replay from S+1 through H. Replay duplicates above S and out-of-order entries are rejected in this simplified interface. Capacity is capped at 64 replay entries per call. Invalid replay leaves the old quantities intact and the engine disabled.</p>
+<p>The final <code>*self = candidate</code> is a publication under exclusive <code>&amp;mut self</code> ownership. It is not a hardware-atomic publication visible to unrelated readers. A concurrent application needs a separate synchronization and reclamation design. The model assumes no new events arrive during recovery; a real system must buffer concurrent arrivals, define cutover, then continue without losing them.</p>
+<h3 id="the-fast-path-in-rust">The fast path in Rust</h3>
+<p>The following methods are inside <code>impl Engine</code> in the lab. Validation precedes mutation; once recovery begins, the normal path cannot re-enable trading.</p>
+<pre><code class="language-rust"><span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">ingest</span><span class="p">(</span><span class="o">&amp;</span><span class="k">mut</span><span class="w"> </span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">u</span><span class="p">:</span><span class="w"> </span><span class="nc">Update</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Outcome</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">mode</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="n">Mode</span><span class="p">::</span><span class="n">Live</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="k">return</span><span class="w"> </span><span class="n">Outcome</span><span class="p">::</span><span class="n">RecoveryRequired</span><span class="p">;</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="n">u</span><span class="p">.</span><span class="n">session</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">session</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="n">u</span><span class="p">.</span><span class="n">level</span><span class="w"> </span><span class="o">&gt;=</span><span class="w"> </span><span class="n">LEVELS</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="k">return</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">stop</span><span class="p">();</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="n">u</span><span class="p">.</span><span class="n">seq</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">next</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="k">return</span><span class="w"> </span><span class="n">Outcome</span><span class="p">::</span><span class="n">Duplicate</span><span class="p">;</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="n">u</span><span class="p">.</span><span class="n">seq</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">next</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="k">return</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">stop</span><span class="p">();</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="n">next</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">next</span><span class="p">.</span><span class="n">checked_add</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="k">return</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">stop</span><span class="p">();</span>
+<span class="w">        </span><span class="p">};</span>
+<span class="w">        </span><span class="bp">self</span><span class="p">.</span><span class="n">quantities</span><span class="p">[</span><span class="n">u</span><span class="p">.</span><span class="n">level</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">u</span><span class="p">.</span><span class="n">qty</span><span class="p">;</span>
+<span class="w">        </span><span class="bp">self</span><span class="p">.</span><span class="n">next</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">next</span><span class="p">;</span>
+<span class="w">        </span><span class="n">Outcome</span><span class="p">::</span><span class="n">Applied</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="cp">#[cold]</span>
+<span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">stop</span><span class="p">(</span><span class="o">&amp;</span><span class="k">mut</span><span class="w"> </span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Outcome</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="bp">self</span><span class="p">.</span><span class="n">mode</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Mode</span><span class="p">::</span><span class="n">Recovering</span><span class="p">;</span>
+<span class="w">        </span><span class="n">Outcome</span><span class="p">::</span><span class="n">RecoveryRequired</span>
+<span class="w">    </span><span class="p">}</span>
+</code></pre>
+<p>Here <code>self.next</code> is the next required sequence. <code>checked_add</code> is evaluated before assigning a quantity, so sequence overflow cannot leave a half-applied update. The <code>stop</code> method changes only eligibility; rebuilding the book is a separate operation.</p>
+<h3 id="8-4-run-a-gap-and-recovery">8.4 Run a gap and recovery</h3>
+<pre><code class="language-sh">cargo<span class="w"> </span>run<span class="w"> </span>--release<span class="w"> </span>--offline<span class="w"> </span>--<span class="w"> </span>recovery
+</code></pre>
+<p>The scenario starts with a snapshot through sequence 9:</p>
+<pre><code class="language-text">receive 10 -&gt; apply; next becomes 11
+receive 12 -&gt; gap; disable trading
+receive 11 -&gt; still recovering; do not resume from an uncertain state
+snapshot through 11 + replay 12 -&gt; validate, replace candidate; next becomes 13
+</code></pre>
+<p>In the tiny example, recovery is provided directly. A production recovery worker must acquire and authenticate a suitable snapshot, preserve session identity, retain relevant updates, detect overflow, and fail closed when it cannot bridge the gap.</p>
+<h3 id="8-5-measure-coherent-state-and-freshness-separately">8.5 Measure coherent state and freshness separately</h3>
+<p>Define timestamps:</p>
+<ul>
+<li><code>t_gap</code>: the engine detects unusable input.</li>
+<li><code>t_request</code>: it initiates recovery.</li>
+<li><code>t_snapshot</code>: a complete snapshot is available.</li>
+<li><code>t_replay_done</code>: required buffered updates have been applied.</li>
+<li><code>t_eligible</code>: validation and operational gates permit decisions again.</li>
+</ul>
+<p>Then:</p>
+<div class="equation">T_unavailable = t_eligible − t_gap</div>
+<p>Report snapshot acquisition, rebuild, replay, and validation intervals separately when their boundaries do not overlap. If work runs in parallel, use a timeline rather than adding overlapping intervals.</p>
+<p>A state can be internally coherent and still too old to trade. Add a freshness gate appropriate to the protocol and clock quality, plus session health, risk readiness, and recovery-buffer health. Market-book recovery also does not resolve outstanding-order uncertainty; the order-entry side needs its own reconciliation before returning to normal operation.</p>
+<p>Bound local algorithm work by configured capacities. Do not promise a fixed full recovery time when snapshot delivery, retransmission, or exchange availability is external. Set a measured objective and an explicit timeout action.</p>
+<h2 id="9-hardware-versus-software-a-corrected-comparison">9. Hardware versus software: a corrected comparison</h2>
+<table>
+<thead>
+<tr>
+<th>Dimension</th>
+<th>CPU / microarchitecture</th>
+<th>Software / network pipeline</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Work item</td>
+<td>Instruction or micro-operation</td>
+<td>Packet, protocol message, book event, order frame</td>
+</tr>
+<tr>
+<td>Recovery or waiting cause</td>
+<td>Wrong prediction, dependencies, serialization, coherence contention</td>
+<td>Backlog, partial output, transport rules, sequence loss, session recovery</td>
+</tr>
+<tr>
+<td>Useful measures</td>
+<td>Core cycles, retired instructions, IPC, branch misses, model-specific recovery/coherence events</td>
+<td>Event age, queue depth, RX-to-TX latency, send-pending age, disabled duration</td>
+</tr>
+<tr>
+<td>Scope of discard</td>
+<td>Younger speculative instructions in a recovery event</td>
+<td>Only data or state that the application protocol permits discarding</td>
+</tr>
+<tr>
+<td>Techniques to investigate</td>
+<td>Compact common path, PGO, locality, correct synchronization</td>
+<td>Capacity headroom, bounded polling, measured batching, suitable network API, validated replay</td>
+</tr>
+<tr>
+<td>Shared concern</td>
+<td>Dependencies and contention can delay progress</td>
+<td>Delays can propagate into later events</td>
+</tr>
+</tbody>
+</table>
+<p>Fences and cache ownership transfers belong in the broader stall investigation even when no instruction stream is squashed. A context switch belongs in scheduling analysis; it can affect cache locality and timing without matching either kind of application flush.</p>
+<h2 id="10-measure-tails-without-fooling-yourself">10. Measure tails without fooling yourself</h2>
+<h3 id="10-1-use-two-complementary-experiments">10.1 Use two complementary experiments</h3>
+<p><strong>Microbenchmark:</strong> isolate a kernel such as dispatch, publication, or a queue handoff. Record generated instructions, input pattern, cycles or elapsed time, and limitations. A useful result might be “this layout reduces elapsed batch time for this workload.”</p>
+<p><strong>System replay:</strong> schedule market events independently of completion, preserve bursts and protocol order, and measure through the chosen RX/TX or decision boundary. Inject gaps, backpressure, and pauses. A useful result might be “the p99.99 decision age meets the target at this load, with zero invalid decisions.”</p>
+<p>Optimizing a microbenchmark is evidence about that kernel. The system replay determines whether the change helps the system.</p>
+<h3 id="10-2-avoid-coordinated-omission">10.2 Avoid coordinated omission</h3>
+<p>A closed-loop benchmark sends a request, waits for the response, then sends the next request. During a stall, it stops generating traffic. A real exchange may continue sending updates; the test omits those arrivals and their queue wait.</p>
+<p>Use a generator with an independent arrival schedule. Preserve intended arrival timestamps when it falls behind. A generator’s own overload must be recorded; otherwise the test may silently reduce offered load. If testing raw service time separately, label it as such.</p>
+<p>The lab’s queue model is open-loop in virtual time, which makes this issue visible without claiming realistic NIC timing.</p>
+<h3 id="10-3-understand-p99-99">10.3 Understand p99.99</h3>
+<p>The p99.99 latency is a value at which approximately 99.99% of the chosen sample distribution falls at or below it. State the estimator; the queue lab uses nearest rank. For N samples its rank is <code>ceil(0.9999 × N)</code> in sorted order.</p>
+<p>At one million samples, about 100 lie above the nominal p99.99 threshold. At ten thousand samples, only about one does. A high percentile with very few tail observations is unstable. Events during a market burst are also correlated, so counting them does not create that many independent trials.</p>
+<p>Report sample count, duration, repeated runs, time-window distributions, maximum observed value, and dropped or excluded events. An observed maximum is not a guaranteed upper bound. Keep recovery events visible even if normal-path statistics are reported separately.</p>
+<h3 id="10-4-instrument-the-right-clocks-and-boundaries">10.4 Instrument the right clocks and boundaries</h3>
+<p>Use <code>Instant</code> for initial portable elapsed-time experiments. Its overhead can dominate an individual nanosecond-scale event, which is why the branch lab times batches. Preallocate timing storage and record outside the hot loop where possible.</p>
+<p>For NIC-to-NIC latency, investigate hardware timestamps and clock alignment. Cross-device timestamps require a validated mapping; application timestamps cannot by themselves identify when a frame crossed the wire. Linux documents socket timestamping, hardware timestamp sources, and TX completion distinctions in its <a href="https://docs.kernel.org/networking/timestamping.html">timestamping guide</a>.</p>
+<p>If moving to TSC timing, establish processor support, ordering requirements, measurement overhead, migration handling, and the conversion rate. Inline assembly needs compiler as well as processor-ordering reasoning. Do not place CPUID around every event and then attribute its cost to the event.</p>
+<h3 id="10-5-record-the-environment-with-the-result">10.5 Record the environment with the result</h3>
+<table>
+<thead>
+<tr>
+<th>Area</th>
+<th>Record</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Processor</td>
+<td>Exact model, stepping, microcode, SMT status, core placement</td>
+</tr>
+<tr>
+<td>Clock behavior</td>
+<td>Frequency policy, observed frequency, thermal state</td>
+</tr>
+<tr>
+<td>OS</td>
+<td>Kernel, scheduler setup, interrupt placement, security mitigation configuration</td>
+</tr>
+<tr>
+<td>Memory</td>
+<td>NUMA allocation and placement, page policy, working-set size</td>
+</tr>
+<tr>
+<td>Network</td>
+<td>NIC, firmware, driver/API, queue counts and sizes, link speed, offloads</td>
+</tr>
+<tr>
+<td>Build</td>
+<td><code>rustc -Vv</code>, Cargo profile, target flags, binary identity, PGO training identity</td>
+</tr>
+<tr>
+<td>Workload</td>
+<td>Message mix, sizes, sessions, burst pattern, sustained rate, exceptional traffic</td>
+</tr>
+<tr>
+<td>Instrumentation</td>
+<td>Timestamp boundaries, histogram precision, sample and drop counts</td>
+</tr>
+</tbody>
+</table>
+<p>CPU pinning reduces migration; it does not remove interrupts, firmware activity, or shared-resource contention. Do not alter security mitigations as a casual benchmarking shortcut. Test and document the deployment configuration that will actually be used.</p>
+<h3 id="10-6-match-symptoms-to-evidence">10.6 Match symptoms to evidence</h3>
+<table>
+<thead>
+<tr>
+<th>Symptom</th>
+<th>Candidate explanation</th>
+<th>Next evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Branch misses rise with a regime change</td>
+<td>Different control-flow distribution</td>
+<td>Assembly, branch-event samples, representative PGO comparison</td>
+</tr>
+<tr>
+<td>IPC drops but branch misses do not rise</td>
+<td>Dependencies, memory stalls, instruction supply, or scheduling</td>
+<td>Model-specific profiling, cache and scheduling traces</td>
+</tr>
+<tr>
+<td>Handoff latency rises when telemetry is enabled</td>
+<td>Sharing or scheduling interference</td>
+<td>Cache-line ownership analysis; compare local counters and publication cadence</td>
+</tr>
+<tr>
+<td>Send-pending age rises</td>
+<td>Output backpressure or an overloaded writer</td>
+<td>Partial-write counts, socket/queue observations, NIC timestamps</td>
+</tr>
+<tr>
+<td>p50 stays low while decision age spikes</td>
+<td>Burst queueing or rare pauses</td>
+<td>Open-loop replay, queue high-water marks, time-window tails</td>
+</tr>
+<tr>
+<td>Recovery seems fast but decisions are wrong</td>
+<td>Missing replay, bad cutover, unsafe publication</td>
+<td>Reference-model replay and injected protocol failures</td>
+</tr>
+</tbody>
+</table>
+<p>These are hypotheses to investigate. A generic <code>cache-misses</code> event cannot establish false sharing, and an IPC drop cannot uniquely identify a flush. Event availability and meaning vary by processor; use the <a href="https://perfmon-events.intel.com/">Intel event catalog</a> or the corresponding vendor documentation.</p>
+<h2 id="11-move-from-the-lab-to-production-in-deliberate-stages">11. Move from the lab to production in deliberate stages</h2>
+<h3 id="stage-a-build-a-correct-reference">Stage A — build a correct reference</h3>
+<p>Decode a documented synthetic protocol into integer fields. Reject truncated frames and invalid ranges before mutating state. Create a simple reference book whose output can be compared with a faster implementation after every event. Include duplicate, reset, gap, and overflow cases.</p>
+<p>Acceptance: every accepted sequence produces the expected book; a missing prerequisite disables affected decisions.</p>
+<h3 id="stage-b-bound-memory-and-work">Stage B — bound memory and work</h3>
+<p>Define capacities for receive bursts, decoded events, recovery replay, order frames, and telemetry. Preallocate before enabling traffic. Handle exhaustion explicitly: reject new work where legal, disable affected decisions, or initiate recovery. A queue overwrite must never silently erase a required incremental update or accepted order intent.</p>
+<p>Acceptance: every full-buffer condition has a tested outcome; common-path allocation and synchronous logging have been removed or measured within the budget.</p>
+<h3 id="stage-c-give-mutable-state-one-owner">Stage C — give mutable state one owner</h3>
+<p>Prefer an exclusive book owner with well-defined input and output channels. Separate telemetry and recovery I/O when that helps, while accounting for cross-core communication. If multiple cores read published state, prove coherence and object lifetime; a pointer swap alone does not solve reclamation.</p>
+<p>Acceptance: every shared field has an ownership or synchronization explanation, and overload cannot cause unbounded memory growth.</p>
+<h3 id="stage-d-establish-a-baseline-under-realistic-load">Stage D — establish a baseline under realistic load</h3>
+<p>Measure normal operation, sustained near-capacity load, realistic bursts, long idle-to-busy transitions, gaps, and blocked output. Collect queue ages alongside elapsed times. Observe both normal-path latency and time spent unable to make decisions.</p>
+<p>Acceptance: results are reproducible enough to compare changes and include sufficient tail observations for the chosen percentile.</p>
+<h3 id="stage-e-optimize-one-hypothesis-at-a-time">Stage E — optimize one hypothesis at a time</h3>
+<p>Try a smaller common path, a different dispatch layout, padded ownership boundaries, PGO, burst size, or reduced cross-core handoff. Compare unchanged input and correctness checks. A change that improves p50 but worsens p99.99 or recovery correctness may be unacceptable.</p>
+<p>For PGO, use absolute profile paths, an <code>llvm-profdata</code> compatible with the compiler’s LLVM, and the same relevant build flags across generation and use. The basic sequence is instrument → train → merge → rebuild using profile → validate on held-out traffic. Follow the current <a href="https://doc.rust-lang.org/rustc/profile-guided-optimization.html">rustc PGO procedure</a>.</p>
+<p>Acceptance: a measured improvement survives representative workload variation with the same invariants.</p>
+<h3 id="stage-f-validate-the-actual-deployment-and-failure-paths">Stage F — validate the actual deployment and failure paths</h3>
+<p>Integrate the actual exchange protocol and approved risk rules, connection recovery, session sequence tracking, duplicate-order prevention, kill controls, and operator observability. Kernel bypass requires explicit packet-buffer ownership and NIC integration; it is not a Cargo flag that turns this lab into a gateway.</p>
+<p>Acceptance: protocol conformance, failure injection, independent review, deployment testing, and rollback procedures are complete. Production readiness is an evidence standard for the integrated system, not a property conferred by Rust or a fast benchmark.</p>
+<h2 id="12-exercises-with-answers">12. Exercises with answers</h2>
+<h3 id="exercise-1-units">Exercise 1 — units</h3>
+<p>An assumed 18-cycle loss occurs at a constant 4.5 GHz. What elapsed time does the simple conversion give?</p>
+<p><strong>Answer:</strong> <code>18 / 4.5 = 4 ns</code>. This does not establish that a particular branch actually incurs 18 cycles, or that TSC ticks equal core cycles.</p>
+<h3 id="exercise-2-double-counting">Exercise 2 — double-counting</h3>
+<p>A benchmark reports 20 cycles between branch redirection and resumed useful work. A diagram suggests a 10-stage refill. Can you report 30 lost cycles?</p>
+<p><strong>Answer:</strong> No. The measured interval may already include refill, and stage count is not an independently established latency. Define non-overlapping boundaries and use the target CPU’s behavior.</p>
+<h3 id="exercise-3-backlog">Exercise 3 — backlog</h3>
+<p>A consumer can process 12 million events/s. Events arrive at 9 million/s. A 1 µs interruption occurs. Estimate extra backlog and subsequent catch-up time.</p>
+<p><strong>Answer:</strong> About nine events accumulate. Spare capacity is 3 million/s, so the simplified model predicts about 3 µs to clear the extra backlog after processing resumes. Actual bursts and finite buffers can change the result.</p>
+<h3 id="exercise-4-invalid-optimization">Exercise 4 — invalid “optimization”</h3>
+<p>Your book expects 5001. The next event is 5003 and is younger than your maximum-age threshold. May you apply it and trade?</p>
+<p><strong>Answer:</strong> Its freshness does not establish completeness. Disable affected decisions and bridge the sequence gap through the protocol’s recovery procedure.</p>
+<h3 id="exercise-5-a-partial-write">Exercise 5 — a partial write</h3>
+<p>A 100-byte frame writes 40 bytes, then returns <code>WouldBlock</code>. What should the next successful attempt contain?</p>
+<p><strong>Answer:</strong> The remaining 60 bytes, starting at offset 40. Preserve frame ownership, respect a work budget, and prevent a later frame from being interleaved incorrectly. A fatal disconnect creates a separate order-reconciliation problem.</p>
+<h3 id="exercise-6-interpret-a-fast-benchmark">Exercise 6 — interpret a fast benchmark</h3>
+<p>The branch lab’s random pattern is as fast as its predictable pattern. Does that prove there are no branch mispredictions?</p>
+<p><strong>Answer:</strong> No. Inspect generated instructions, check relevant counters, and consider memory limits, predictor behavior, compiler lowering, and measurement noise. Batch throughput can hide individual delays.</p>
+<h3 id="exercise-7-safe-reuse">Exercise 7 — safe reuse</h3>
+<p>Can you turn the one-shot publication example into a reusable queue by repeatedly setting <code>ready</code> to false?</p>
+<p><strong>Answer:</strong> Not without a complete producer/consumer protocol. You need rules for payload ownership, observation of new generations, overwrite prevention, and progress. A Boolean alone does not distinguish every generation.</p>
+<h3 id="exercise-8-recovery-failure">Exercise 8 — recovery failure</h3>
+<p>A snapshot covers through 900. The required cutover is 904. Buffered updates are 901, 902, and 904. Can you publish?</p>
+<p><strong>Answer:</strong> No. Sequence 903 is missing. Keep trading disabled and obtain enough authoritative state or replay to reach a valid cutover.</p>
+<h2 id="13-small-glossary">13. Small glossary</h2>
+<table>
+<thead>
+<tr>
+<th>Term</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Architectural state</td>
+<td>Program-visible results defined by the instruction architecture</td>
+</tr>
+<tr>
+<td>Microarchitectural state</td>
+<td>Internal implementation state, such as caches and predictors</td>
+</tr>
+<tr>
+<td>Speculation</td>
+<td>Work performed before all conditions for its use are known</td>
+</tr>
+<tr>
+<td>Squash</td>
+<td>Prevent speculative work from committing architectural results</td>
+</tr>
+<tr>
+<td>Retirement</td>
+<td>In-order commitment of completed instruction results</td>
+</tr>
+<tr>
+<td>IPC</td>
+<td>Retired instructions divided by a specified cycle count</td>
+</tr>
+<tr>
+<td>RFO</td>
+<td>A request associated with acquiring ownership needed for writing</td>
+</tr>
+<tr>
+<td>False sharing</td>
+<td>Independent variables contending because they share a coherence unit</td>
+</tr>
+<tr>
+<td>NUMA</td>
+<td>Memory-access costs depend on CPU and memory placement</td>
+</tr>
+<tr>
+<td>Backpressure</td>
+<td>A downstream component cannot accept output at the offered rate</td>
+</tr>
+<tr>
+<td>Cutover</td>
+<td>An explicitly defined state boundary used to switch from recovery to normal processing</td>
+</tr>
+<tr>
+<td>Tail latency</td>
+<td>The slow portion of a measured latency distribution</td>
+</tr>
+</tbody>
+</table>
+<h2 id="14-sources-and-further-reading">14. Sources and further reading</h2>
+<p>These are primary documentation sources. Their architectural or API semantics are stronger evidence than any timing number copied from another machine. The diagrams, sample protocol, queue arithmetic, Rust lab, and engineering progression are original teaching material derived from the stated assumptions.</p>
+<ol>
+<li><a href="https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html">Intel Software Developer’s Manuals</a>: instruction semantics, serialization, memory ordering, and timestamp-counter requirements.</li>
+<li><a href="https://www.intel.com/content/www/us/en/developer/articles/technical/software-security-guidance/technical-documentation/hardware-behavior-related-to-speculative-execution.html">Intel hardware behavior related to speculative execution</a>: speculative execution and effects that are not simply erased by architectural rollback.</li>
+<li><a href="https://cdrdv2-public.intel.com/821612/248966-Optimization-Reference-Manual-V1-050.pdf">Intel optimization reference, Volume 1</a>: model-dependent optimization and performance analysis; consult the revision appropriate to the CPU.</li>
+<li><a href="https://perfmon-events.intel.com/">Intel PerfMon event catalog</a>: exact event definitions and model availability.</li>
+<li><a href="https://perfmon-events.intel.com/platforms/icelakex/offcore-events/offcore/">Intel offcore event example</a>: ownership requests and coherence responses; an example for that platform, not a portable event list.</li>
+<li><a href="https://www.intel.com/content/dam/develop/external/us/en/documents/gdma-2-165938.pdf">Intel false-sharing guidance</a>: cache-line sharing and padding.</li>
+<li><a href="https://doc.dpdk.org/guides/prog_guide/ethdev/ethdev.html">DPDK poll-mode driver guide</a>: queues, bursts, ownership assumptions, and execution models. The unversioned guide can track development releases; match deployed DPDK documentation.</li>
+<li><a href="https://man7.org/linux/man-pages/man7/tcp.7.html">Linux tcp(7)</a>: TCP_NODELAY, TCP_CORK, and transport options.</li>
+<li><a href="https://docs.kernel.org/networking/timestamping.html">Linux timestamping documentation</a>: software/hardware timestamp boundaries and reporting.</li>
+<li><a href="https://doc.rust-lang.org/std/sync/atomic/enum.Ordering.html">Rust atomic orderings</a>: Acquire, Release, Relaxed, and SeqCst semantics.</li>
+<li><a href="https://doc.rust-lang.org/std/net/struct.TcpStream.html">Rust TcpStream</a> and <a href="https://doc.rust-lang.org/std/io/trait.Write.html">Write</a>: configuration, nonblocking operations, partial writes, and flushing.</li>
+<li><a href="https://doc.rust-lang.org/std/hint/fn.black_box.html">Rust black_box</a>: optimization-barrier limits.</li>
+<li><a href="https://doc.rust-lang.org/stable/core/attribute.cold.html">Rust cold attribute</a>: compiler hint semantics.</li>
+<li><a href="https://doc.rust-lang.org/rustc/profile-guided-optimization.html">rustc profile-guided optimization</a>: profile generation and use.</li>
+<li><a href="https://man7.org/linux/man-pages/man1/perf-stat.1.html">perf-stat manual</a>: counter collection and result interpretation.</li>
+<li><a href="https://nasdaqtrader.com/content/technicalSupport/FAQs/Nasdaq_Glimpse_FAQ.pdf">Nasdaq GLIMPSE recovery FAQ</a>: an actual snapshot/replay alignment example; consult the relevant current feed specifications for implementation.</li>
+</ol>
+<footer>Original teaching chapter • Sources checked 19 October 2026 • Offline reading edition</footer></main></body></html>

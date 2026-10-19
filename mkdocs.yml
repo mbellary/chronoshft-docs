@@ -1,0 +1,46 @@
+site_name: Chronoshft HFT Learning Path
+site_description: A growing learning path for high-frequency trading and low-latency engineering.
+theme:
+  name: readthedocs
+  navigation_depth: 4
+plugins:
+  - search
+markdown_extensions:
+  - admonition
+  - fenced_code
+  - tables
+  - toc:
+      permalink: true
+extra_css:
+  - stylesheets/extra.css
+validation:
+  nav:
+    omitted_files: warn
+  links:
+    not_found: warn
+    unrecognized_links: warn
+    absolute_links: warn
+not_in_nav: |
+  **/*-lab/README.md
+nav:
+  - Home: index.md
+  - Microstructure:
+      - Overview: microstructure/index.md
+  - Systems:
+      - Overview: systems/index.md
+      - Memory alignment and padding: systems/memory-alignment-padding/memory-alignment-padding.md
+  - Hardware:
+      - Overview: hardware/index.md
+      - Memory hierarchy: hardware/memory-hierarchy/memory-hierarchy.md
+      - Branch prediction: hardware/branch-prediction/branch-prediction-chapter.md
+      - Memory hierarchy verification: hardware/memory-hierarchy/verification.md
+  - Latency:
+      - Overview: latency/index.md
+      - Prefetching: latency/prefetch/prefetching-hft-chapter.md
+      - Pipeline flushes: latency/pipeline-flush/pipeline-flush-chapter.md
+      - Prefetching validation: latency/prefetch/validation-notes.md
+      - Pipeline flush verification: latency/pipeline-flush/verification.md
+  - Networking:
+      - Overview: networking/index.md
+  - Backtesting:
+      - Overview: backtesting/index.md

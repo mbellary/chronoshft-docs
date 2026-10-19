@@ -1,0 +1,10 @@
+[package]
+name = "prefetch-lab"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+
+[profile.release]
+debug = 1
+
