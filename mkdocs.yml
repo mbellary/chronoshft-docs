@@ -31,12 +31,19 @@ nav:
       - Overview: microstructure/index.md
   - Systems:
       - Overview: systems/index.md
-      - Memory alignment and padding: systems/memory-alignment-padding/memory-alignment-padding.md
+      - General foundations:
+          - Memory alignment and padding: systems/memory-alignment-padding/memory-alignment-padding.md
+      - HFT system engineering:
+          - Memory alignment for HFT: systems/hft/memory-alignment-hft.md
   - Hardware:
       - Overview: hardware/index.md
-      - Memory hierarchy: hardware/memory-hierarchy/memory-hierarchy.md
-      - Branch prediction: hardware/branch-prediction/branch-prediction-chapter.md
-      - Memory hierarchy verification: hardware/memory-hierarchy/verification.md
+      - General foundations:
+          - Memory hierarchy: hardware/memory-hierarchy/memory-hierarchy.md
+          - Branch prediction: hardware/branch-prediction/branch-prediction-chapter.md
+          - Memory hierarchy verification: hardware/memory-hierarchy/verification.md
+      - HFT system engineering:
+          - Memory hierarchy for HFT: hardware/hft/memory-hierarchy-for-hft.md
+          - Memory hierarchy for HFT validation: hardware/hft/memory-hierarchy-validation.md
   - Latency:
       - Overview: latency/index.md
       - Prefetching: latency/prefetch/prefetching-hft-chapter.md
