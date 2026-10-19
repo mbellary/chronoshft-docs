@@ -1,4 +1,7 @@
 site_name: Chronoshft HFT Learning Path
+site_url: https://mbellary.github.io/chronoshft-docs/
+repo_url: https://github.com/mbellary/chronoshft-docs
+edit_uri: edit/main/docs/
 site_description: A growing learning path for high-frequency trading and low-latency engineering.
 theme:
   name: readthedocs

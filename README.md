@@ -13,7 +13,7 @@ python -m pip install -r requirements.txt
 mkdocs serve
 ```
 
-Open <http://127.0.0.1:8000>. Changes to Markdown and configuration reload automatically.
+Open <http://127.0.0.1:8000/chronoshft-docs/>. Changes to Markdown and configuration reload automatically.
 
 ## Build and validate
 
@@ -22,6 +22,16 @@ mkdocs build --strict
 ```
 
 The generated site is written to `site/`, which is excluded from Git. CI runs the same strict build on pushes and pull requests.
+
+## GitHub Pages
+
+The site is configured for <https://mbellary.github.io/chronoshft-docs/>.
+
+For the first deployment, open the repository's **Settings → Pages** and select **GitHub Actions** under **Build and deployment → Source**.
+
+Push changes to `main` to build and deploy automatically. Pull requests run the strict build for validation. You can also run the **Documentation** workflow manually from the Actions tab on `main`.
+
+The workflow uploads `site/` as a Pages artifact and deploys it using GitHub's Pages actions. The deployment job uses the `github-pages` environment and the required Pages and OpenID Connect permissions. A separate `gh-pages` branch is unnecessary.
 
 ## Organization
 
