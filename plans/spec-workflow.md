@@ -14,8 +14,7 @@ Rather than mapping specifications 1:1 to Rust source files (`error.rs`, `fields
 you must follow a 4-step workflow to carve out clean, decoupled specs. 
 
 The output of this workflow must be a `README.md` and `0X-<capability>.md` files.
- 1. **`README.md`** - must be updated after executing step 1, step 3, and step 4
- 2. **`0X-<capability>.md`** - must be updated for step 2.
+
 
 The following provides the example for the crate like `nexus-bits`,
 
