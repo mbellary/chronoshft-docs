@@ -84,16 +84,16 @@
 
 ## Layer B: Rust Target Binding
 
-### B.1 Public API & Macro Syntax
+### 1. Public API & Macro Syntax
 * Exact attribute syntax, generated types, and method signatures 
 
 
-### B.2 Memory, ABI & Performance Guarantees
+### 2. Memory, ABI & Performance Guarantees
 * **Representation:** e.g., `#[repr(transparent)]` over backing primitive `T`.
 * **Zero-Cost Constraints:** e.g., no heap allocations; constant-time bitwise shifts/masks on hot paths.
 * **Derived Traits:** e.g., `Copy, Clone, Debug, PartialEq, Eq`.
 
-### B.3 Compile-Time vs. Runtime Error Boundary
+### 3. Compile-Time vs. Runtime Error Boundary
 
 | Requirement ID | Trigger Condition | Enforcement Phase | Exact Contract / Diagnostic |
 | :--- | :--- | :--- | :--- |
@@ -102,7 +102,7 @@
 
 ---
 
-### Verification Checklist
+## Verification Checklist
 * [ ] All compile-time rules have corresponding `tests/ui/<req_id>_*.rs` `trybuild` tests.
 * [ ] All runtime rules have unit and property tests covering boundary values (`0`, `MAX`, `MAX + 1`, signed min/max).
 * [ ] `size_of::<GeneratedType>() == size_of::<BackingRepr>()` asserted at compile time.
