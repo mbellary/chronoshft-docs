@@ -37,7 +37,7 @@ please add the capabilities to the `README.md` file.
 
 ## Step 2: Use a Strict Two-Layer Spec Template
 
-**you must use the Capability Spec Template to generate the specifications.**
+**you must use the sample-specification-template.md to generate the specifications.**
 
 Give every rule in your spec a short, stable ID (e.g., `LAYOUT-001`, `SIGN-002`, `ENUM-004`).
 
