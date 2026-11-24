@@ -10,6 +10,16 @@ A growing collection of chapters, worked examples, and Rust experiments for unde
 | [Latency](latency/index.md) | Predictable performance, measurement, and optimization |
 | [Networking](networking/index.md) | Market-data transport, order connectivity, and packet processing |
 | [Backtesting](backtesting/index.md) | Historical replay, simulation, and strategy evaluation |
+| [Types & Encoding](types-and-encoding/index.md) | Bit packing, ASCII strings, identifiers, and fixed-point decimals |
+| [Storage & Allocation](storage-and-allocation/index.md) | Memory allocation, object reuse, smart pointers, and durable journals |
+| [Collections](collections/index.md) | Slab-backed lists, heaps, and trees |
+| [Flow Control](flow-control/index.md) | Rate limiting |
+| [Concurrency & Communication](concurrency-and-communication/index.md) | Queues, channels, byte buffers, latest-value slots, and event notifications |
+| [FIX Protocol](fix-protocol/index.md) | FIX framing, sessions, code generation, logging, and conformance tools |
+| [Platform](platform/index.md) | Portable OS primitives and shared-memory communication |
+| [Runtime](runtime/index.md) | Event dispatch, async execution, and timer scheduling |
+| [Streaming Statistics](streaming-statistics/index.md) | Online statistics, signal processing, and monitoring |
+| [Inference](inference/index.md) | Model execution for stateless and stateful predictions |
 
 ## Start with the foundations and existing chapters
 

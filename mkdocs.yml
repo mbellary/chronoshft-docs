@@ -54,3 +54,23 @@ nav:
       - Overview: networking/index.md
   - Backtesting:
       - Overview: backtesting/index.md
+  - "Types & Encoding":
+      - Overview: types-and-encoding/index.md
+  - "Storage & Allocation":
+      - Overview: storage-and-allocation/index.md
+  - "Collections":
+      - Overview: collections/index.md
+  - "Flow Control":
+      - Overview: flow-control/index.md
+  - "Concurrency & Communication":
+      - Overview: concurrency-and-communication/index.md
+  - "FIX Protocol":
+      - Overview: fix-protocol/index.md
+  - "Platform":
+      - Overview: platform/index.md
+  - "Runtime":
+      - Overview: runtime/index.md
+  - "Streaming Statistics":
+      - Overview: streaming-statistics/index.md
+  - "Inference":
+      - Overview: inference/index.md
