@@ -9,13 +9,13 @@
 ## Layer A: Language-Agnostic Contract
 
 
-## 1. Purpose & Core Concept
+### 1. Purpose & Core Concept
 * **Objective:** [1–2 sentences defining what this component represents and the problem it solves.]
 * **Optimization Strategy:** [1–2 sentences explaining how the design achieves performance goals—e.g., precomputation, zero-copy views, cache-line alignment, branchless execution.]
 
 ---
 
-## 2. Structural Attributes & Memory Layout
+### 2. Structural Attributes & Memory Layout
 * **Value vs. Reference Semantics:** [Specify stack-allocated value type, zero-copy view, or heap-allocated handle; state rules against hidden allocations.]
 * **Generic / Type Parameters:**
   * `[ParamName]` (`[Constraint]`): [Description of the type parameter, e.g., fixed-width unsigned integer of bit-width $W$.]
@@ -26,7 +26,7 @@
 
 ---
 
-## 3. Construction & Validation Semantics
+### 3. Construction & Validation Semantics
 * **Evaluation Context:** [Specify whether initialization must support compile-time (`const` / `constexpr`) evaluation, runtime evaluation, or both.]
 * **Inputs:** `[param_1]`, `[param_2]`
 * **Invariants (Preconditions):**
@@ -39,17 +39,17 @@
 
 ---
 
-## 4. Behavioral Operations
+### 4. Behavioral Operations
 [State global guarantees across all methods, e.g., branchless execution, $O(1)$ time complexity, purity.]
 
-### A. [Operation Name, e.g., Read / Extract]
+#### A. [Operation Name, e.g., Read / Extract]
 [One-sentence summary of what the operation does.]
 * **Requirement ID:** `[PREFIX-OP-01]`
 * **Signature:** `[method_name]([inputs]) -> [OutputType]`
 * **Semantics:** `[Exact mathematical, bitwise, or algorithmic expression]`
 * **Guarantees / Postconditions:** [State invariants guaranteed on the return value or mutated state.]
 
-### B. [Operation Name, e.g., Write / Insert]
+#### B. [Operation Name, e.g., Write / Insert]
 [One-sentence summary of what the operation does.]
 * **Requirement ID:** `[PREFIX-OP-02]`
 * **Signature:** `[method_name]([inputs]) -> [OutputType]`
@@ -58,13 +58,13 @@
   * *Checked / Fallible:* [Validation condition and specific error returned on violation.]
 * **Semantics:** `[Exact mathematical, bitwise, or algorithmic expression]`
 
-### C. [Operation Name, e.g., Clear / Reset / Test]
+#### C. [Operation Name, e.g., Clear / Reset / Test]
 [One-sentence summary of what the operation does.]
 * **Requirement ID:** `[PREFIX-OP-03]`
 * **Signature:** `[method_name]([inputs]) -> [OutputType]`
 * **Semantics:** `[Exact mathematical, bitwise, or algorithmic expression]`
 
-### D. Boundary & Edge-Case Vectors
+#### D. Boundary & Edge-Case Vectors
 
 | Case | Inputs (`W`, `start`, `len`, `val`) | Expected Result / Diagnostic |
 | :--- | :--- | :--- |
@@ -74,7 +74,7 @@
 
 ---
 
-## 5. Non-Functional & Performance Constraints
+### 5. Non-Functional & Performance Constraints
 * **Runtime & Compiler Guarantees:** [Specify inlining expectations, constant-folding behavior, and zero-overhead abstractions.]
 * **Safety & Undefined Behavior:** [List explicit guards against shift overflow, integer wrap-around, unaligned reads, or out-of-bounds access.]
 * **Immutability & Concurrency:** [Define thread-safety guarantees, mutability rules, and synchronization constraints.]
@@ -102,7 +102,7 @@
 
 ---
 
-## Verification Checklist
+### Verification Checklist
 * [ ] All compile-time rules have corresponding `tests/ui/<req_id>_*.rs` `trybuild` tests.
 * [ ] All runtime rules have unit and property tests covering boundary values (`0`, `MAX`, `MAX + 1`, signed min/max).
 * [ ] `size_of::<GeneratedType>() == size_of::<BackingRepr>()` asserted at compile time.
