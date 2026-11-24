@@ -56,6 +56,14 @@ nav:
       - Overview: backtesting/index.md
   - "Types & Encoding":
       - Overview: types-and-encoding/index.md
+      - nexus-bits:
+          - Overview: types-and-encoding/nexus-bits/README.md
+          - Bit math and layout validation: types-and-encoding/nexus-bits/01-bit-math-and-layout-validation.md
+          - IntEnum contract: types-and-encoding/nexus-bits/02-int-enum-contract.md
+          - Flat bit storage: types-and-encoding/nexus-bits/03-flat-bit-storage.md
+          - Tagged union storage: types-and-encoding/nexus-bits/04-tagged-union-storage.md
+          - Error types and diagnostics: types-and-encoding/nexus-bits/05-error-types-and-diagnostics.md
+          - Runtime bit fields and flags: types-and-encoding/nexus-bits/06-runtime-bitfields-and-flags.md
   - "Storage & Allocation":
       - Overview: storage-and-allocation/index.md
   - "Collections":

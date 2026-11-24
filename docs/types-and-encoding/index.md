@@ -9,3 +9,7 @@ Bit packing, ASCII strings, identifiers, and fixed-point decimals.
 - [nexus-bits-derive](https://github.com/mbellary/nexus/tree/main/nexus-bits-derive)
 - [nexus-decimal](https://github.com/mbellary/nexus/tree/main/nexus-decimal)
 - [nexus-id](https://github.com/mbellary/nexus/tree/main/nexus-id)
+
+## Specifications
+
+- [nexus-bits capability specifications](nexus-bits/README.md)
