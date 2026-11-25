@@ -13,6 +13,46 @@ These Draft 0.1.0 specifications describe the public contract of `nexus-bits` 0.
 | [05 Error types and diagnostics](05-error-types-and-diagnostics.md) | Structured failures and compile-time diagnostics | Exact payload and message assertions |
 | [06 Runtime bit fields and flags](06-runtime-bitfields-and-flags.md) | Reusable descriptors for reading and editing caller-owned words | Const evaluation, boundary checks, and preservation properties |
 
+## Use cases
+
+A precomputed [`BitField`](06-runtime-bitfields-and-flags.md) stores the position, width, and mask for a field. The same descriptor can read or update that field across many integer words. Each operation does a bounded amount of work and allocates no heap memory. Updates return a new word and preserve bits outside the selected field. These properties are useful in systems targeting sub-100 µs latency, where end-to-end timing still depends on the surrounding workload.
+
+### 1. Tagged pointers in lock-free data structures
+
+**How it works.** In a queue or ring buffer, pack a node reference and a version counter or state flags into one `u64`. For example, an application that controls its reference encoding can use bits 0–47 for a pool-relative node index and bits 48–63 for a version counter. Encoding an actual pointer requires a layout supported by the target ABI and address configuration. See [x86-64 five-level paging](https://docs.kernel.org/next/x86/x86_64/5level-paging.html) and [AArch64 tagged addresses](https://docs.kernel.org/next/arch/arm64/tagged-pointers.html).
+
+**Why it matters.** On targets with `AtomicU64`, one successful compare-and-swap (CAS) can publish the reference and its tag together. The version can distinguish a reused reference while its tag differs from the reader's snapshot. The algorithm must account for counter wraparound, memory ordering, and safe node reclamation. See [Rust's atomic comparison contract](https://doc.rust-lang.org/stable/core/sync/atomic/type.AtomicU64.html#method.compare_exchange).
+
+### 2. Zero-copy parsing of binary protocol headers
+
+**How it works.** For a custom UDP multicast feed, define constant descriptors for a two-byte header containing a four-bit `message_type`, a one-bit `side`, a three-bit `time_in_force`, and eight `sequence_flags` bits. Check that the receive buffer contains both header bytes, load the word in the protocol's byte order, and extract the fields.
+
+**Why it matters.** The parser can borrow the packet in the receive buffer and decode its header from a scalar word without allocating a decoded header or copying the payload. The wire layout determines the field positions and widths.
+
+### 3. Hardware control and status registers
+
+**How it works.** Define descriptors for fields such as `DMA_BURST_SIZE` at bits 4–7, `IRQ_ENABLE` at bit 12, and `ERROR_CODE` at bits 16–23 of a 32-bit register image. Use the device's I/O interface to read the register, then extract its status fields or compute a new control value.
+
+**Why it matters.** A field update preserves adjacent bits in the computed word. A driver can write that word back when the device permits read-modify-write. The register specification determines how to handle reserved bits, write-one-to-clear flags, access ordering, and concurrent device updates. The same field operations can decode packed NIC descriptors and NVMe queue entries using their documented layouts.
+
+### 4. High-density order and event identifiers
+
+**How it works.** Divide a 64-bit order or event ID into an eight-bit `shard_id`, a 32-bit `timestamp_delta`, a four-bit `source_engine`, and a 20-bit `monotonic_sequence`. Define the timestamp unit and epoch, and specify how IDs stay unique when the timestamp or sequence reaches its field limit.
+
+**Why it matters.** Once a consumer has the ID, it can extract the shard or timestamp directly for routing or staleness checks without a separate metadata lookup.
+
+### 5. Compact state machines and flags
+
+**How it works.** Pack a three-bit `connection_state`, a four-bit `retry_count`, a two-bit `priority_level`, and a two-bit `circuit_breaker_status` into one `u16`. An event loop can read the packed word, validate a transition, and compute its replacement. For state shared across threads, the caller can use compare-and-swap on a supported atomic word and revalidate the transition if the snapshot changes.
+
+**Why it matters.** A smaller hot-state record can fit more entries in cache. Measure the containing struct's size and account for alignment and placement. Frequently updated records owned by different cores can still contend when they share a cache line.
+
+### 6. Custom allocator and slab page headers
+
+**How it works.** Pack a six-bit `size_class_index`, a ten-bit `allocated_slot_count`, a four-bit `numa_node_id`, and four `page_flags` bits into a single `u32`. During allocation or deallocation, read the size class and occupancy from that word, then update the count with a checked insertion. Size the field for the maximum page occupancy, including the full state.
+
+**Why it matters.** A four-byte descriptor keeps per-page metadata compact and gives the allocator bounded-cost access to its counters and flags. The allocator's free list or bitmap determines the cost of finding an available slot.
+
 ## Source-to-capability traceability matrix
 
 | Source | Specifications | Responsibility |
