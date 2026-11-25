@@ -13,5 +13,5 @@ Write all technical documentation, specifications, and code explanations using t
 9. **Copy-Paste Ready:** Keep all code blocks, schemas, and templates self-contained, minimal, and immediately usable without manual cleanup.
 9. **Copy-Paste Ready:** Keep all code blocks, schemas, and templates self-contained, minimal, and immediately usable without manual cleanup.
 
-For full formatting examples, ASCII diagram templates, and pre-publish checklists, read `docs/STYLE_GUIDE.md` when performing documentation reviews or audits.
+For full formatting examples, ASCII diagram templates, and pre-publish checklists, read `guides/STYLE_GUIDE.md` when performing documentation reviews or audits.
 
