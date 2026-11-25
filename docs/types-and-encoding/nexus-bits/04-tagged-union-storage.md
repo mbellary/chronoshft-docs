@@ -12,26 +12,35 @@ verified_by:
   - nexus-bits/tests/derive_enum.rs
 ---
 
-# SPEC-04: Tagged Union Storage
+# SPEC-04 · Tagged union storage
+
+**Store a tag and its variant-specific fields in one integer.**
 
 ---
 
-## Layer A: Language-Agnostic Contract (The "What")
+## Layer A · Language-agnostic contract
 
-### 1. Purpose & Scope
+**The tag tells the reader which fields the remaining bits represent.**
+
+### 1. Purpose and scope
+
+**Use tagged storage when the meaning of a field position changes with the kind of record.**
 
 Store a variant identifier and its payload in one integer, with the identifier determining how to interpret the payload bits.
 
-### 2. Domain Model & Invariants
+### 2. Domain model and invariants
+
+**All variants share the tag positions and can reuse positions for their own data.**
 
 #### 2.1 Definitions
 
-- The **parent** holds a backing word that may contain any bit pattern.
-- The **tag**, also called the discriminant, is the unsigned code that identifies the variant. All variants use the same tag positions.
-- The **payload** is the set of fields and flags defined for a particular variant. A **typed variant** exposes that variant's payload getters.
-- **Projection** checks a parent word against a requested variant and, on success, returns a typed variant holding the same word.
+- **Parent.** It holds a backing word that may contain any bit pattern.
+- **Tag.** The unsigned code that identifies the variant. It is also called the discriminant. All variants use the same tag positions.
+- **Payload.** The fields and flags defined for a particular variant.
+- **Typed variant.** A value that exposes only its variant's payload getters.
+- **Projection.** It checks a parent word against a requested variant and, on success, returns a typed variant holding the same word.
 
-#### 2.2 Layout and Construction Invariants
+#### 2.2 Layout and construction invariants
 
 | Req ID | Rule | Invariant |
 | --- | --- | --- |
@@ -41,7 +50,9 @@ Store a variant identifier and its payload in one integer, with the identifier d
 | **TAG-004** | Builder and typed payload | The builder starts from zero, inserts the variant tag, and packs assigned members under the defaults and field rules in [SPEC-03](03-flat-bit-storage.md). The draft invariant requires a typed variant's enum getters to decode its stored codes. Layer B documents where current builders fall short. |
 | **TAG-009** | Work by operation | Testing one tag takes fixed work. Projection checks only the requested variant's enum members after a matching tag. The generated storage operations use local values without heap allocation. |
 
-### 3. Operations & State Transitions
+### 3. Operations and state changes
+
+**Read the tag before exposing the fields for a requested variant.**
 
 | Req ID | Operation | Result |
 | --- | --- | --- |
@@ -52,7 +63,7 @@ Store a variant identifier and its payload in one integer, with the identifier d
 | **TAG-007** | Project a variant | Report a tag mismatch before touching the payload. With a matching tag, report the first unassigned enum payload code. Return a typed variant on success. |
 | **TAG-008** | Read typed payload or return raw | Read a payload member using its declared type. Raw extraction and conversion to the parent preserve all bits. |
 
-#### 3.1 Worked Example
+#### 3.1 Worked example
 
 One byte can represent a trade or a quote. The bottom two bits hold the tag. Both variants use bits 2 through 4, with the tag telling the reader what those bits mean.
 
@@ -61,9 +72,17 @@ One byte can represent a trade or a quote. The bottom two bits hold the tag. Bot
 | Trade | Unused | Side code | Quantity | `01` |
 | Quote | Unused | Unused | Level | `10` |
 
+```text
+Bit positions    7 | 6 5  | 4 3 2    | 1 0
+Trade            0 | side | quantity | 0 1
+Quote            0 | 0 0  | level    | 1 0
+```
+
 A trade with quantity 5 (`101`) and side code 1 (`01`) is `0_01_101_01` or `0x35`. A quote with level 5 is `0_00_101_10` or `0x16`. The same three payload bits hold `101` in both words. A reader checks the last two bits to decide whether the value 5 means quantity or level. If a trade contains side code 3 and only codes 0 and 1 are assigned, its tag still identifies it as a trade, but projection reports the unknown side code.
 
-### 4. Acceptance Criteria (Gherkin)
+### 4. Acceptance criteria
+
+**Check valid variants, mismatched tags, invalid codes, and payload boundaries.**
 
 ```gherkin
 Feature: Tagged union storage
@@ -113,15 +132,59 @@ Feature: Tagged union storage
 
 ---
 
-## Layer B: Rust Target Binding (The "How in Rust")
+## Layer B · Rust target binding
 
-### 1. Public Signatures & Attributes
+**The Rust macro generates a parent type and a separate typed view for each variant.**
 
-#### 1.1 Tagged Layout Declaration
+### 1. Public signatures and attributes
+
+**Use `kind` to identify the variant and an `as_*` method to check and read its data.**
+
+#### 1.1 Tagged layout declaration
 
 Use `#[bit_storage(repr = R, discriminant(start = S, len = L))]` with the default `derive` feature. The backing primitive `R` may be signed or unsigned, with a width from 8 through 128 bits. Positions and lengths are parsed as `u32` literals and `#[variant(N)]` codes as `u64` literals. Variants have named fields or are unit variants. Payload members use `#[field(start = S, len = L)]` or `#[flag(N)]`.
 
+See the standalone example under [Memory and performance guarantees](#2-memory-and-performance-guarantees) for the full declaration.
+
+#### 1.2 Generated types and methods
+
+The table shows public methods for the example. `R` denotes the backing type, and errors are exported by `nexus_bits`.
+
+| Generated type | Methods and conversions |
+| --- | --- |
+| `Event` | `const fn from_raw(raw: R) -> Self`, `const fn raw(self) -> R`, `fn kind(&self) -> Result<EventKind, UnknownDiscriminant<R>>` |
+| `Event`, per variant | `fn is_trade(&self) -> bool`, `fn as_trade(&self) -> Result<EventTrade, UnknownDiscriminant<R>>`, `fn trade() -> EventTradeBuilder` |
+| `EventTrade` | `fn builder() -> EventTradeBuilder`, `const fn raw(self) -> R`, `const fn as_parent(self) -> Event`, `impl From<EventTrade> for Event` |
+| `EventTrade`, per member | Primitive `const fn qty(&self) -> u8`, flag `const fn member(&self) -> bool`, enum `fn side(&self) -> Side` |
+| `EventTradeBuilder` | `fn member(self, val: T) -> Self`, `fn build(self) -> Result<EventTrade, FieldOverflow<R>>`, `fn build_parent(self) -> Result<Event, FieldOverflow<R>>` |
+
+Generated types inherit the input visibility. The parent tuple field also inherits it. Typed variant tuple fields are private. Variant names form suffixes on generated types. In method suffixes, the generator lowercases uppercase letters and inserts an underscore before each uppercase character after the first. `EventKind` contains the variant names and uses Rust's default representation. Its own discriminant values do not carry the assigned tag codes.
+
+### 2. Memory and performance guarantees
+
+**The parent and typed variants each hold one integer, including the tag.**
+
+#### 2.1 What each record stores
+
+The parent and each typed variant are `#[repr(transparent)]` over `R`. They match its size, alignment (which addresses can hold them), and application binary interface (ABI) rules for passing values. The trade and quote in the example both take **one byte**, including their tag. The tag bits live inside the word. Payloads share positions, and offsets and masks are constants in generated code. A typed variant holds the whole packed word by value, so returning one from projection needs no separate payload allocation or reference to the parent.
+
+For the same example, a byte-oriented record with one byte for the tag and a two-byte payload buffer takes three bytes. The buffer has room for separate quantity and side bytes in a trade and is reused for a quote. This comparison uses the explicit `ByteEvent` layout below.
+
+| Stored layout | Bytes per event | Bytes for 1,024 events |
+| --- | ---: | ---: |
+| Explicit byte tag and two-byte payload buffer | 3 | 3,072 |
+| Packed `Event` or one of its typed variants | 1 | 1,024 |
+
+Parent, variants, and kind derive `Debug, Clone, Copy, PartialEq, Eq, Hash`. The packed types compare and hash their whole backing word. Builders hold optional assignments and derive `Debug, Clone, Copy, Default`. The builder's size and layout are separate from the packed representation and have no fixed ABI contract.
+
+In a Cargo binary project, add the following line under `[dependencies]`. Save the Rust example as `src/main.rs` and run `cargo run`.
+
+```toml
+nexus-bits = "0.4.4"
+```
+
 ```rust
+use core::mem::{align_of, size_of};
 use nexus_bits::{IntEnum, bit_storage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, IntEnum)]
@@ -146,39 +209,6 @@ pub enum Event {
         level: u8,
     },
 }
-```
-
-#### 1.2 Generated Types and Methods
-
-The table shows public methods for the example. `R` denotes the backing type, and errors are exported by `nexus_bits`.
-
-| Generated type | Methods and conversions |
-| --- | --- |
-| `Event` | `const fn from_raw(raw: R) -> Self`, `const fn raw(self) -> R`, `fn kind(&self) -> Result<EventKind, UnknownDiscriminant<R>>` |
-| `Event`, per variant | `fn is_trade(&self) -> bool`, `fn as_trade(&self) -> Result<EventTrade, UnknownDiscriminant<R>>`, `fn trade() -> EventTradeBuilder` |
-| `EventTrade` | `fn builder() -> EventTradeBuilder`, `const fn raw(self) -> R`, `const fn as_parent(self) -> Event`, `impl From<EventTrade> for Event` |
-| `EventTrade`, per member | Primitive `const fn qty(&self) -> u8`, flag `const fn member(&self) -> bool`, enum `fn side(&self) -> Side` |
-| `EventTradeBuilder` | `fn member(self, val: T) -> Self`, `fn build(self) -> Result<EventTrade, FieldOverflow<R>>`, `fn build_parent(self) -> Result<Event, FieldOverflow<R>>` |
-
-Generated types inherit the input visibility. The parent tuple field also inherits it. Typed variant tuple fields are private. Variant names form suffixes on generated types. In method suffixes, the generator lowercases uppercase letters and inserts an underscore before each uppercase character after the first. `EventKind` contains the variant names and uses Rust's default representation. Its own discriminant values do not carry the assigned tag codes.
-
-### 2. Memory & Performance Guarantees
-
-#### 2.1 What Each Record Stores
-
-The parent and each typed variant are `#[repr(transparent)]` over `R` with its size, alignment, and ABI. The trade and quote in the example both take **one byte**, including their tag. The tag bits live inside the word. Payloads share positions, and offsets and masks are constants in generated code. A typed variant holds the whole packed word by value, so returning one from projection needs no separate payload allocation or reference to the parent.
-
-For the same example, a byte-oriented record with one byte for the tag and a two-byte payload buffer takes three bytes. The buffer has room for separate quantity and side bytes in a trade and is reused for a quote. This comparison uses the explicit `ByteEvent` layout below.
-
-| Stored layout | Bytes per event | Bytes for 1,024 events |
-| --- | ---: | ---: |
-| Explicit byte tag and two-byte payload buffer | 3 | 3,072 |
-| Packed `Event` or one of its typed variants | 1 | 1,024 |
-
-Parent, variants, and kind derive `Debug, Clone, Copy, PartialEq, Eq, Hash`. The packed types compare and hash their whole backing word. Builders hold optional assignments and derive `Debug, Clone, Copy, Default`. The builder's size and layout are separate from the packed representation and have no fixed ABI contract.
-
-```rust
-use core::mem::{align_of, size_of};
 
 #[repr(C)]
 struct ByteEvent {
@@ -186,28 +216,30 @@ struct ByteEvent {
     payload: [u8; 2],
 }
 
-assert_eq!(size_of::<ByteEvent>(), 3);
-assert_eq!(size_of::<Event>(), size_of::<u8>());
-assert_eq!(size_of::<EventTrade>(), size_of::<u8>());
-assert_eq!(size_of::<EventQuote>(), size_of::<u8>());
-assert_eq!(align_of::<Event>(), align_of::<u8>());
-assert_eq!(align_of::<EventTrade>(), align_of::<u8>());
-assert_eq!(align_of::<EventQuote>(), align_of::<u8>());
+fn main() {
+    assert_eq!(size_of::<ByteEvent>(), 3);
+    assert_eq!(size_of::<Event>(), size_of::<u8>());
+    assert_eq!(size_of::<EventTrade>(), size_of::<u8>());
+    assert_eq!(size_of::<EventQuote>(), size_of::<u8>());
+    assert_eq!(align_of::<Event>(), align_of::<u8>());
+    assert_eq!(align_of::<EventTrade>(), align_of::<u8>());
+    assert_eq!(align_of::<EventQuote>(), align_of::<u8>());
 
-let trade = Event::trade().qty(5).side(Side::Sell).build_parent().unwrap();
-let quote = Event::quote().level(5).build_parent().unwrap();
-assert_eq!(trade.raw(), 0x35);
-assert_eq!(quote.raw(), 0x16);
-assert_eq!(trade.kind().unwrap(), EventKind::Trade);
-assert_eq!(quote.as_quote().unwrap().level(), 5);
+    let trade = Event::trade().qty(5).side(Side::Sell).build_parent().unwrap();
+    let quote = Event::quote().level(5).build_parent().unwrap();
+    assert_eq!(trade.raw(), 0x35);
+    assert_eq!(quote.raw(), 0x16);
+    assert_eq!(trade.kind().unwrap(), EventKind::Trade);
+    assert_eq!(quote.as_quote().unwrap().level(), 5);
 
-let with_unused_bit = Event::from_raw(0xB5).as_trade().unwrap();
-assert_eq!(with_unused_bit.qty(), 5);
-assert_eq!(with_unused_bit.side(), Side::Sell);
-assert_eq!(with_unused_bit.as_parent().raw(), 0xB5);
+    let with_unused_bit = Event::from_raw(0xB5).as_trade().unwrap();
+    assert_eq!(with_unused_bit.qty(), 5);
+    assert_eq!(with_unused_bit.side(), Side::Sell);
+    assert_eq!(with_unused_bit.as_parent().raw(), 0xB5);
+}
 ```
 
-#### 2.2 What Each Operation Costs
+#### 2.2 What each operation costs
 
 | Operation | Work expressed by the generated code |
 | --- | --- |
@@ -220,7 +252,9 @@ assert_eq!(with_unused_bit.as_parent().raw(), 0xB5);
 
 Geometry checks run at macro expansion. The generated runtime machinery allocates no heap memory. A manual `IntEnum` implementation may do additional work or allocate. The byte counts describe footprint. Instruction count, branch behavior, and latency depend on the compiler and target.
 
-### 3. Compile-Time vs. Runtime Boundary
+### 3. Compile-time and runtime boundary
+
+**The macro checks tag and field declarations, while reads and projections check the stored codes.**
 
 | Req ID | Condition | Enforcement phase | Mechanism |
 | --- | --- | --- | --- |
@@ -232,7 +266,9 @@ Geometry checks run at macro expansion. The generated runtime machinery allocate
 
 **Current implementation limits.** Builders write zero for omitted fields, so a builder can produce a typed variant whose omitted enum field has no assigned code zero. Its getter then panics. Projection validates each enum payload through the current mapping before returning the typed variant. The tagged builder compares some inputs after casting to `R` and has no enum representation-width assertion like the flat builder. A narrowing cast can therefore discard bits before validation. With a full-width tag over signed backing narrower than 64 bits, the extracted negative word can sign-extend on the cast to `u64`. A code using the sign bit can then fail dispatch even though it fits the declared tag width.
 
-### 4. Verification Traceability
+### 4. Verification traceability
+
+**Tests exercise dispatch and payload reads, with more compile-fail and boundary cases pending.**
 
 | Requirements | Existing verification | Pending coverage |
 | --- | --- | --- |

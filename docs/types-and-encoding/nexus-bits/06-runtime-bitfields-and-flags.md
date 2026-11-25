@@ -13,26 +13,34 @@ verified_by:
   - nexus-bits/tests/flag_contracts.rs
 ---
 
-# SPEC-06: Runtime Bit Fields and Flags
+# SPEC-06 · Runtime bit fields and flags
+
+**Reuse a description of a field or flag to read and change bits in caller-owned integers.**
 
 ---
 
-## Layer A: Language-Agnostic Contract (The "What")
+## Layer A · Language-agnostic contract
 
-### 1. Purpose & Scope
+**A descriptor records where to operate, while each word carries its own values.**
+
+### 1. Purpose and scope
+
+**Use a reusable descriptor when the location is known before reading or updating the word.**
 
 Define reusable descriptors for reading or changing selected bits in a caller-supplied integer, with identical operation semantics for a valid descriptor built as a constant or at runtime.
 
-### 2. Domain Model & Invariants
+### 2. Domain model and invariants
+
+**A descriptor stores the selected positions as a mask and can operate on many words.**
 
 #### 2.1 Definitions
 
-- A **word** is a signed or unsigned integer of width `W`. Position 0 is its least significant bit.
-- A **field descriptor** holds a start, a width, and a mask with ones at the selected positions.
-- A **flag descriptor** holds one bit position and a mask with a single one at that position.
-- A **mask** selects positions in a word. For example, the mask `0b0111_0000` selects bits 4, 5, and 6.
+- **Word.** This is a signed or unsigned integer of width `W`. Position 0 is the rightmost bit, which has weight 1.
+- **Field descriptor.** It holds a start, a width, and a mask with ones at the selected positions.
+- **Flag descriptor.** It holds one bit position and a mask with a single one at that position.
+- **Mask.** It selects positions in a word. For example, the mask `0b0111_0000` selects bits 4, 5, and 6.
 
-#### 2.2 Descriptor Invariants
+#### 2.2 Descriptor invariants
 
 | Req ID | Rule | Invariant |
 | --- | --- | --- |
@@ -40,9 +48,11 @@ Define reusable descriptors for reading or changing selected bits in a caller-su
 | **RUN-002** | Valid geometry | For a field require `0 <= start < W` and `1 <= len <= W − start`. For a flag require `0 <= bit < W`. Validate the range without overflowing. Independently constructed descriptors may select overlapping positions. |
 | **RUN-008** | Word returned by value | An update returns the resulting word. The caller owns any assignment or synchronization needed to update shared storage. Work for each operation is bounded for a supported integer width. |
 
-### 3. Operations & State Transitions
+### 3. Operations and state changes
 
-#### 3.1 Field Operations
+**Read a selected value or return a replacement word that preserves its neighbors.**
+
+#### 3.1 Field operations
 
 Let `M` be the positioned mask. A right shift fills high bits with zeros for unsigned backing and extends the word's sign for signed backing.
 
@@ -57,7 +67,7 @@ Let `M` be the positioned mask. A right shift fills high bits with zeros for uns
 
 For example, placing −3 in a four-bit field at position 0 of an eight-bit signed word keeps `1101`. The backing sign bit is outside that field, so the result has a clear sign bit and extraction returns 13. If the field instead occupies bits 4 through 7, its mask reaches the sign bit and the returned comparison maximum is −1. Checked insertion uses that maximum, so a value of zero is rejected. These are the signed backing compatibility semantics.
 
-#### 3.2 Flag Operations
+#### 3.2 Flag operations
 
 In this table `^` means exclusive OR, `&` means bitwise AND, and `~` flips all bits. Each update leaves every bit outside the flag position unchanged.
 
@@ -68,7 +78,7 @@ In this table `^` means exclusive OR, `&` means bitwise AND, and `~` flips all b
 | **RUN-007** | Set, clear, or toggle | Set by OR-ing the word with `M`, clear with `word & ~M`, or toggle with `word ^ M`. |
 | **RUN-007** | Assign from Boolean | Apply set for true and clear for false. |
 
-#### 3.3 Worked Example
+#### 3.3 Worked example
 
 In `0xB1`, the three-bit mode starts at position 4 and the active flag is at position 7.
 
@@ -80,7 +90,15 @@ In `0xB1`, the three-bit mode starts at position 4 and the active flag is at pos
 
 The same mode descriptor can read a second word, `0x21`, where it returns 2. Neither word needs its own copy of the descriptor.
 
-### 4. Acceptance Criteria (Gherkin)
+```text
+[One mode descriptor]
+    |-- reads word 0: 0xB1 -> mode 3
+    |-- reads word 1: 0x21 -> mode 2
+```
+
+### 4. Acceptance criteria
+
+**Check position bounds, returned values, and preservation of unselected bits.**
 
 ```gherkin
 Feature: Runtime bit fields and flags
@@ -121,11 +139,15 @@ Feature: Runtime bit fields and flags
 
 ---
 
-## Layer B: Rust Target Binding (The "How in Rust")
+## Layer B · Rust target binding
 
-### 1. Public Signatures & Attributes
+**Rust provides `const` methods to construct and use `BitField` and `Flag`.**
 
-#### 1.1 Supported Types and Methods
+### 1. Public signatures and attributes
+
+**Use `BitField` for a range of bits and `Flag` for one Boolean position.**
+
+#### 1.1 Supported types and methods
 
 The crate exports `BitField` and `Flag`. Each method below is `pub const fn`, with an implementation for `u8/u16/u32/u64/u128/i8/i16/i32/i64/i128`. The APIs are available in `no_std` with default features disabled.
 
@@ -136,15 +158,17 @@ The crate exports `BitField` and `Flag`. Each method below is `pub const fn`, wi
 | `Flag<T>` | `new(bit: u32) -> Self`, `bit(self) -> u32`, `mask(self) -> T`, `is_set(self, val: T) -> bool` |
 | `Flag<T>` | `set(self, val: T) -> T`, `clear(self, val: T) -> T`, `toggle(self, val: T) -> T`, `set_to(self, val: T, enabled: bool) -> T` |
 
-#### 1.2 Mask Construction
+#### 1.2 Mask construction
 
 The field constructor forms the low mask and moves it to the field's start. For a full-width field it uses the all-ones value (`!0`), avoiding a shift by the word width. The flag constructor shifts a single one to the flag position. Both store their positioned masks for use by subsequent operations. In a constant initializer, Rust evaluates the constructor at compile time. A constructor called with runtime positions performs its checks and mask calculation at runtime.
 
-### 2. Memory & Performance Guarantees
+### 2. Memory and performance guarantees
 
-#### 2.1 What the Descriptor and Each Word Store
+**Words carry only the values, while reused descriptors keep their masks separately.**
 
-Both descriptor types derive `Clone, Copy, Debug, PartialEq, Eq`. A `BitField<T>` stores two `u32` values and one mask of type `T`. A `Flag<T>` stores one `u32` value and one mask of type `T`. Their default Rust representation permits target-dependent padding and alignment. There is no fixed ABI for either descriptor.
+#### 2.1 What the descriptor and each word store
+
+Both descriptor types derive `Clone, Copy, Debug, PartialEq, Eq`. A `BitField<T>` stores two `u32` values and one mask of type `T`. A `Flag<T>` stores one `u32` value and one mask of type `T`. Their default Rust representation permits target-dependent padding and alignment. Neither descriptor has a fixed application binary interface (ABI) for passing the value across compiled code boundaries.
 
 | Instantiation | Observed size on x86-64 Linux | Observed alignment |
 | --- | ---: | ---: |
@@ -155,24 +179,32 @@ Both descriptor types derive `Clone, Copy, Debug, PartialEq, Eq`. A `BitField<T>
 
 These are `size_of` and `align_of` measurements for the reviewed target. The descriptors and the data have separate storage. For example, `[u8; 1024]` holds 1,024 bytes of words. In a layout containing that array and one stored descriptor of each `u8` type, the descriptors account for 20 bytes before any enclosing-struct padding. They describe all 1,024 words. The compiler may embed constant descriptor values directly in the generated code.
 
+In a Cargo binary project, add the following line under `[dependencies]`. Save the Rust example as `src/main.rs` and run `cargo run`.
+
+```toml
+nexus-bits = { version = "0.4.4", default-features = false }
+```
+
 ```rust
 use nexus_bits::{BitField, Flag};
 
 const MODE: BitField<u8> = BitField::<u8>::new(4, 3);
 const ACTIVE: Flag<u8> = Flag::<u8>::new(7);
 
-let mut words = [0xB1, 0x21];
-assert_eq!(MODE.mask(), 0x70);
-assert_eq!((MODE.get(words[0]), MODE.get(words[1])), (3, 2));
+fn main() {
+    let mut words = [0xB1, 0x21];
+    assert_eq!(MODE.mask(), 0x70);
+    assert_eq!((MODE.get(words[0]), MODE.get(words[1])), (3, 2));
 
-words[0] = MODE.set(words[0], 5).unwrap();
-assert_eq!(words, [0xD1, 0x21]);
-words[0] = ACTIVE.clear(words[0]);
-assert_eq!(words, [0x51, 0x21]);
-assert_eq!(MODE.get(words[0]), 5);
+    words[0] = MODE.set(words[0], 5).unwrap();
+    assert_eq!(words, [0xD1, 0x21]);
+    words[0] = ACTIVE.clear(words[0]);
+    assert_eq!(words, [0x51, 0x21]);
+    assert_eq!(MODE.get(words[0]), 5);
+}
 ```
 
-#### 2.2 Work at Construction and on Each Use
+#### 2.2 Work at construction and on each use
 
 | Operation | Work expressed by the implementation |
 | --- | --- |
@@ -185,7 +217,9 @@ assert_eq!(MODE.get(words[0]), 5);
 
 The constructors and word operations allocate no heap memory. Reusing a descriptor avoids checking geometry and rebuilding the mask for each word. Methods are marked `#[inline]`, and the compiler may fold constant descriptor values and operations. The source operations define the work to be done. Instruction count, branch behavior, and latency depend on the compiler and target.
 
-### 3. Compile-Time vs. Runtime Boundary
+### 3. Compile-time and runtime boundary
+
+**The same constructor can run in a constant expression or at runtime.**
 
 | Req ID | Condition | Enforcement phase | Mechanism |
 | --- | --- | --- | --- |
@@ -195,7 +229,9 @@ The constructors and word operations allocate no heap memory. Reusing a descript
 
 **Current implementation limits.** The field constructor adds `start + len` in `u32` before checking the bound. An extreme endpoint can panic on arithmetic overflow or wrap when overflow checks are disabled. A separate mask-construction edge case occurs for signed backing at `len = W − 1`. For example, in `i8` shifting one left by seven sets the sign bit, yielding −128. Subtracting one then overflows with checks enabled, including during constant evaluation. With overflow checks disabled, the subtraction wraps to 127 before the positioning shift. Thus the current constructor can reject a mathematically valid signed layout.
 
-### 4. Verification Traceability
+### 4. Verification traceability
+
+**Tests cover common masks and flag positions, with signed and endpoint edge cases pending.**
 
 | Requirements | Existing verification | Pending coverage |
 | --- | --- | --- |

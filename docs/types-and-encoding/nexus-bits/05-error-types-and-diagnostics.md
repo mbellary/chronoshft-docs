@@ -16,26 +16,34 @@ verified_by:
   - nexus-bits/tests/flag_contracts.rs
 ---
 
-# SPEC-05: Error Types and Diagnostics
+# SPEC-05 · Error types and diagnostics
+
+**Report invalid declarations during compilation and bad values where callers can handle them.**
 
 ---
 
-## Layer A: Language-Agnostic Contract (The "What")
+## Layer A · Language-agnostic contract
 
-### 1. Purpose & Scope
+**Failure reports distinguish an invalid layout, a value that does not fit, and an unassigned code.**
+
+### 1. Purpose and scope
+
+**Use the failure information to find the rejected value or declaration rule.**
 
 Describe how invalid layouts, out-of-range values, and unrecognized codes are reported so callers can act on the failure.
 
-### 2. Domain Model & Invariants
+### 2. Domain model and invariants
+
+**An error carries the rejected number and any field or tag context the operation provides.**
 
 #### 2.1 Definitions
 
-- **Overflow** reports the rejected value and a numeric maximum in the operation's backing type.
-- **Field overflow** adds the member name to an overflow.
-- **Unknown discriminant** reports an extracted code and its context. The context can identify a payload field or the tag itself.
-- **Declaration diagnostic** identifies an invalid static layout or enum declaration during compilation.
+- **Overflow.** It reports the rejected value and a numeric maximum in the operation's backing type.
+- **Field overflow.** It adds the member name to an overflow.
+- **Unknown discriminant.** It reports an extracted code and its context. The context can identify a payload field or the tag itself.
+- **Declaration diagnostic.** It identifies an invalid static layout or enum declaration during compilation.
 
-#### 2.2 Failure Invariants
+#### 2.2 Failure invariants
 
 | Req ID | Rule | Invariant |
 | --- | --- | --- |
@@ -44,7 +52,9 @@ Describe how invalid layouts, out-of-range values, and unrecognized codes are re
 | **ERR-003** | Failure at the validating operation | Reject invalid declarations during compilation. Checked operations return structured errors where specified by the owning capability. Constructor assertions and violated typed-variant invariants have separate failure paths in Layer B. |
 | **ERR-006** | Structured reporting | Construct errors from values and a reference to the declared name where applicable. Text rendering occurs when the caller requests it. |
 
-### 3. Operations & State Transitions
+### 3. Operations and state changes
+
+**An operation reports its failure first, and the caller can format the error on demand.**
 
 | Req ID | Operation | Input | Result |
 | --- | --- | --- | --- |
@@ -54,11 +64,23 @@ Describe how invalid layouts, out-of-range values, and unrecognized codes are re
 | **ERR-004** | Render overflow | Structured overflow | Write the value and maximum, with a field prefix for field overflow. |
 | **ERR-005** | Render an unknown code | Structured decoding failure | Write the code, with a context prefix when the name is nonempty. |
 
-#### 3.1 Worked Example
+#### 3.1 Worked example
 
 A three-bit unsigned mode field accepts 0 through 7. A builder receives 8 and returns the field name `mode`, value 8, and maximum 7. A caller can inspect the maximum and handle the failure directly. If the caller renders the same error, it reads `field 'mode': value 8 exceeds max 7`.
 
-### 4. Acceptance Criteria (Gherkin)
+```text
+[Builder receives mode = 8]
+              |
+     [Check against 7]
+              |
+[Error holds name, value, maximum]
+              |
+  [Caller inspects or formats it]
+```
+
+### 4. Acceptance criteria
+
+**Check the returned values, field names, and diagnostic text.**
 
 ```gherkin
 Feature: Error types and diagnostics
@@ -91,13 +113,17 @@ Feature: Error types and diagnostics
 
 ---
 
-## Layer B: Rust Target Binding (The "How in Rust")
+## Layer B · Rust target binding
 
-### 1. Public Signatures & Attributes
+**Rust uses structured error values, compiler diagnostics, and documented panic paths.**
 
-#### 1.1 Error Values
+### 1. Public signatures and attributes
 
-```rust
+**Read an error's fields to handle it in code, or format it for a person.**
+
+#### 1.1 Error values
+
+```text
 pub struct Overflow<T> {
     pub value: T,
     pub max: T,
@@ -116,7 +142,7 @@ pub struct UnknownDiscriminant<T> {
 
 Each derives `Debug, Clone, Copy, PartialEq, Eq` subject to the corresponding bounds on `T`. Each implements `core::fmt::Display` when `T: Display`. The baseline provides no `core::error::Error` implementation.
 
-#### 1.2 Display Contract
+#### 1.2 Display contract
 
 | Error | Exact display pattern |
 | --- | --- |
@@ -129,9 +155,11 @@ Builder payloads are stored as the backing type. For signed primitive builder ov
 
 Tagged storage uses `"__discriminant"` for tag errors. An empty field is a separate formatting case. The direct `IntEnum::try_from_repr` API returns `None` for unassigned codes.
 
-### 2. Memory & Performance Guarantees
+### 2. Memory and performance guarantees
 
-#### 2.1 What Each Error Stores
+**Creating an error stores small values and can reuse a static name without allocating a string.**
+
+#### 2.1 What each error stores
 
 | Error | Inline data | Field name storage |
 | --- | --- | --- |
@@ -139,7 +167,7 @@ Tagged storage uses `"__discriminant"` for tag errors. An empty field is a separ
 | `FieldOverflow<T>` | Two values of `T` and an `&'static str` | A reference to the static name, with its address and length |
 | `UnknownDiscriminant<T>` | One value of `T` and an `&'static str` | A reference to the static context, with its address and length |
 
-A builder error for `mode` holds a reference to the word `mode` in static storage. Creating another error for that same field stores another reference, while both references can point to the same characters. The number of characters in the name does not change the size of the error value. No owned string or formatted message is stored. These are default Rust layouts. Padding, size, and alignment depend on `T` and the target, and the types have no fixed ABI. The enclosing `Result` also has its own layout. An error's size alone does not establish the size of a successful result or how that result is passed.
+A builder error for `mode` holds a reference to the word `mode` in static storage. Creating another error for that same field stores another reference, while both references can point to the same characters. The number of characters in the name does not change the size of the error value. No owned string or formatted message is stored. These are default Rust layouts. Padding, size, and alignment depend on `T` and the target, and the types have no fixed application binary interface (ABI) for passing the values across compiled code boundaries. The enclosing `Result` also has its own layout. An error's size alone does not establish the size of a successful result or how that result is passed.
 
 For a concrete observation, `size_of` on the reviewed `x86_64-unknown-linux-gnu` toolchain reports the following. Bytes include padding. Both contextual `u8` errors have the same observed size even though one carries an extra byte of numeric data.
 
@@ -149,7 +177,7 @@ For a concrete observation, `size_of` on the reviewed `x86_64-unknown-linux-gnu`
 | `FieldOverflow<u8>` | 24 bytes | 8 bytes |
 | `UnknownDiscriminant<u8>` | 24 bytes | 8 bytes |
 
-#### 2.2 When the Work Happens
+#### 2.2 When the work happens
 
 | Path | Work performed |
 | --- | --- |
@@ -161,6 +189,12 @@ For a concrete observation, `size_of` on the reviewed `x86_64-unknown-linux-gnu`
 
 The example reads the numeric limit before rendering the error. The final line uses `format!`, which creates an owned string at the caller's request. Message cost depends on the name length, rendered values, and destination. The contract specifies these operations and allocations, while instruction counts and timings depend on the target and caller.
 
+In a Cargo binary project, add the following line under `[dependencies]`. Save the Rust example as `src/main.rs` and run `cargo run`.
+
+```toml
+nexus-bits = "0.4.4"
+```
+
 ```rust
 use nexus_bits::bit_storage;
 
@@ -170,13 +204,17 @@ struct Order {
     mode: u8,
 }
 
-let error = Order::builder().mode(8).build().unwrap_err();
-assert_eq!(error.field, "mode");
-assert_eq!((error.overflow.value, error.overflow.max), (8, 7));
-assert_eq!(format!("{error}"), "field 'mode': value 8 exceeds max 7");
+fn main() {
+    let error = Order::builder().mode(8).build().unwrap_err();
+    assert_eq!(error.field, "mode");
+    assert_eq!((error.overflow.value, error.overflow.max), (8, 7));
+    assert_eq!(format!("{error}"), "field 'mode': value 8 exceeds max 7");
+}
 ```
 
-### 3. Compile-Time vs. Runtime Error Boundary
+### 3. Compile-time and runtime error boundary
+
+**The failure mode depends on the operation and whether it runs during compilation or at runtime.**
 
 The table records source-owned message bodies. Braces designate substituted values. Rust and the parser control error headers, spans, and syntax diagnostics.
 
@@ -222,7 +260,9 @@ The missing-repr message predates the 128-bit support. [SPEC-01](01-bit-math-and
 | Tagged kind or projection | Tag is unknown or mismatched, respectively | `Err(UnknownDiscriminant<R>)` with field `"__discriminant"` |
 | Typed variant enum getter | Stored code cannot be decoded | Panic with `variant type invariant violated` in the current implementation |
 
-### 4. Verification Traceability
+### 4. Verification traceability
+
+**Tests cover common error payloads and formatting, with specific boundary and diagnostic cases pending.**
 
 | Requirements | Existing verification | Pending coverage |
 | --- | --- | --- |

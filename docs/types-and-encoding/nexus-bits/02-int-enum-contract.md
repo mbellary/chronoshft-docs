@@ -13,27 +13,35 @@ verified_by:
   - nexus-bits/tests/derive_enum.rs
 ---
 
-# SPEC-02: IntEnum Contract
+# SPEC-02 · IntEnum contract
+
+**Use `IntEnum` to give integer codes names and detect codes with no assigned name.**
 
 ---
 
-## Layer A: Language-Agnostic Contract (The "What")
+## Layer A · Language-agnostic contract
 
-### 1. Purpose & Scope
+**Each named choice has one unique integer code within the range of its representation.**
+
+### 1. Purpose and scope
+
+**Use the mapping for integer codes stored on their own or inside packed fields.**
 
 Give names to selected integer codes and define how to convert between a named variant and its code, including how to handle an unassigned code.
 
 ---
 
-### 2. Domain Model & Invariants
+### 2. Domain model and invariants
+
+**The integer representation sets the range, and each variant names one code in that range.**
 
 #### 2.1 Definitions
 
-- **Variant** is a named choice with no associated payload.
-- **Representation** is the integer type that carries a code. Its width and signedness determine the available integer range. For example, an unsigned eight-bit representation permits codes 0 through 255.
-- **Discriminant** is the integer code assigned to a variant. For example, a mapping may assign `Regular = 0` and `Auction = 3`, leaving codes 1 and 2 unassigned.
+- **Variant.** This is a named choice with no associated payload.
+- **Representation.** This is the integer type that carries a code. Its width and signedness determine the available integer range. For example, an unsigned eight-bit representation permits codes 0 through 255.
+- **Discriminant.** This is the integer code assigned to a variant. For example, a mapping may assign `Regular = 0` and `Auction = 3`, leaving codes 1 and 2 unassigned.
 
-#### 2.2 Mapping Invariants
+#### 2.2 Mapping invariants
 
 | Req ID | Rule | Invariant |
 | --- | --- | --- |
@@ -44,9 +52,11 @@ Give names to selected integer codes and define how to convert between a named v
 
 ---
 
-### 3. Operations & State Transitions
+### 3. Operations and state changes
 
-#### 3.1 Direct Conversion
+**Encoding returns a code, and decoding looks up the choice assigned to that code.**
+
+#### 3.1 Direct conversion
 
 | Req ID | Operation | Input | Output | Failure condition |
 | --- | --- | --- | --- | --- |
@@ -55,7 +65,7 @@ Give names to selected integer codes and define how to convert between a named v
 
 Decoding an encoded variant returns that same variant. Encoding the result of a successful decode returns the original code. For the mapping above, encoding `Auction` yields 3 and decoding 3 yields `Auction`. Decoding 2 yields absence.
 
-#### 3.2 Conversion in Packed Storage
+#### 3.2 Conversion in packed storage
 
 | Req ID | Operation | Result |
 | --- | --- | --- |
@@ -63,11 +73,19 @@ Decoding an encoded variant returns that same variant. Encoding the result of a 
 | **ENUM-005** | Read a flat field | Decode the extracted code. An unassigned code produces a field-specific error. |
 | **ENUM-005** | Project a tagged variant | Check the tag, then decode its enum payload fields. An unassigned payload code produces a field-specific error. |
 
+```text
+[Two field bits] -> [Integer code] -> [Named choice or error]
+       11                 3                    Auction
+       10                 2                    Unknown code
+```
+
 For example, code 3 fits a two-bit unsigned field. Reading `0b11` from that field yields `Auction`. Reading `0b10` yields an unknown-code error because the mapping leaves 2 unassigned.
 
 ---
 
-### 4. Acceptance Criteria (Gherkin)
+### 4. Acceptance criteria
+
+**Check that assigned codes round-trip and unassigned codes produce the expected failure.**
 
 ```gherkin
 Feature: Integer enum conversion
@@ -117,13 +135,17 @@ Feature: Integer enum conversion
 
 ---
 
-## Layer B: Rust Target Binding (The "How in Rust")
+## Layer B · Rust target binding
 
-### 1. Public Signatures & Attributes
+**Rust exposes a conversion trait and a derive macro that generates it for supported enums.**
 
-#### 1.1 Trait and Derive Syntax
+### 1. Public signatures and attributes
 
-```rust
+**Convert with `into_repr` and `try_from_repr`, or let generated packed accessors call them.**
+
+#### 1.1 Trait and derive syntax
+
+```text
 pub trait IntEnum: Copy {
     type Repr;
     fn into_repr(self) -> Self::Repr;
@@ -131,7 +153,13 @@ pub trait IntEnum: Copy {
 }
 ```
 
-The trait is exported as `nexus_bits::IntEnum`. The derive macro of the same name is available with the default `derive` feature. Apply the derive to a unit-variant enum with a single integer `#[repr(T)]`. Supported representations are `u8`, `u16`, `u32`, `u64`, `u128`, `i8`, `i16`, `i32`, `i64`, and `i128`. Rust determines explicit and implicit discriminants. An initial implicit discriminant is 0, and each subsequent implicit discriminant is one greater than the previous one.
+The trait is exported as `nexus_bits::IntEnum`. The derive macro of the same name is available with the default `derive` feature. Apply the derive to an enum whose variants carry no extra data with a single integer `#[repr(T)]`. Supported representations are `u8`, `u16`, `u32`, `u64`, `u128`, `i8`, `i16`, `i32`, `i64`, and `i128`. Rust determines explicit and implicit discriminants. An initial implicit discriminant is 0, and each subsequent implicit discriminant is one greater than the previous one.
+
+In a Cargo binary project, add the following line under `[dependencies]`. Copy any complete Rust example on this page to `src/main.rs` and run `cargo run`.
+
+```toml
+nexus-bits = "0.4.4"
+```
 
 ```rust
 use nexus_bits::IntEnum;
@@ -143,13 +171,15 @@ enum Mode {
     Auction = 3,
 }
 
-assert_eq!(Mode::Regular.into_repr(), 0);
-assert_eq!(Mode::Auction.into_repr(), 3);
-assert_eq!(Mode::try_from_repr(3), Some(Mode::Auction));
-assert_eq!(Mode::try_from_repr(2), None);
+fn main() {
+    assert_eq!(Mode::Regular.into_repr(), 0);
+    assert_eq!(Mode::Auction.into_repr(), 3);
+    assert_eq!(Mode::try_from_repr(3), Some(Mode::Auction));
+    assert_eq!(Mode::try_from_repr(2), None);
+}
 ```
 
-#### 1.2 Generated Conversion and Packed Binding
+#### 1.2 Generated conversion and packed binding
 
 The derive sets `Self::Repr` to the declared primitive type. `into_repr` casts the variant to that type. `try_from_repr` compares the input with declared variant codes and returns the matching variant or `None`. Both methods generated by the derive are ordinary, non-const trait methods.
 
@@ -159,7 +189,9 @@ Under `#[bit_storage]`, builders use `into_repr` and packed readers use `try_fro
 
 ---
 
-### 2. Memory & Performance Guarantees
+### 2. Memory and performance guarantees
+
+**A packed word can hold several short codes, while decoding a code may require comparisons.**
 
 #### 2.1 What occupies memory
 
@@ -176,7 +208,14 @@ The example extends the `Mode` declaration above. With only `second` set to `Auc
 
 ```rust
 use core::mem::{align_of, size_of};
-use nexus_bits::bit_storage;
+use nexus_bits::{IntEnum, bit_storage};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, IntEnum)]
+#[repr(u8)]
+enum Mode {
+    Regular,
+    Auction = 3,
+}
 
 #[bit_storage(repr = u8)]
 struct PackedModes {
@@ -190,15 +229,17 @@ struct PackedModes {
     fourth: Mode,
 }
 
-let packed = PackedModes::builder().second(Mode::Auction).build().unwrap();
+fn main() {
+    let packed = PackedModes::builder().second(Mode::Auction).build().unwrap();
 
-assert_eq!(size_of::<Mode>(), 1);
-assert_eq!(align_of::<Mode>(), 1);
-assert_eq!(size_of::<[Mode; 4]>(), 4);
-assert_eq!(size_of::<PackedModes>(), 1);
-assert_eq!(align_of::<PackedModes>(), align_of::<u8>());
-assert_eq!(packed.raw(), 0b00_00_11_00);
-assert_eq!(packed.second().unwrap(), Mode::Auction);
+    assert_eq!(size_of::<Mode>(), 1);
+    assert_eq!(align_of::<Mode>(), 1);
+    assert_eq!(size_of::<[Mode; 4]>(), 4);
+    assert_eq!(size_of::<PackedModes>(), 1);
+    assert_eq!(align_of::<PackedModes>(), align_of::<u8>());
+    assert_eq!(packed.raw(), 0b00_00_11_00);
+    assert_eq!(packed.second().unwrap(), Mode::Auction);
+}
 ```
 
 #### 2.2 What conversion costs
@@ -215,7 +256,9 @@ For an enum with `N` variants, the generated decoder has one equality guard per 
 
 ---
 
-### 3. Compile-Time vs. Runtime Boundary
+### 3. Compile-time and runtime boundary
+
+**Compilation checks the enum declaration, and each decode handles the code actually stored.**
 
 | Req ID | Condition | Enforcement phase | Mechanism |
 | --- | --- | --- | --- |
@@ -226,7 +269,9 @@ For an enum with `N` variants, the generated decoder has one equality guard per 
 | **ENUM-005** | Assigned code fails the generated field limit check | Builder execution | Returns `FieldOverflow<R>` with the field name, reported input, and mask-derived maximum. |
 | **ENUM-005** | Unassigned code in a flat getter or during tagged projection after a matching tag | Runtime | Returns `UnknownDiscriminant<R>` with the payload field name and extracted value in backing type `R`. |
 
-### 4. Verification Traceability
+### 4. Verification traceability
+
+**Existing tests cover direct mappings and packed fields, with more rejection cases still pending.**
 
 | Requirements | Existing verification | Pending coverage |
 | --- | --- | --- |
