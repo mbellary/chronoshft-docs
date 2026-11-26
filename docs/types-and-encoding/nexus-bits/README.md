@@ -22,6 +22,9 @@ A `BitField` remembers a field's position, width, and **mask**, a pattern of one
 
 The `#[bit_storage]` macro checks a declared layout at compile time and generates a packed type, named getters, and a builder. Use `IntEnum` when a protocol gives names to specific integer codes.
 
+`For foundational concepts , Refer to Bit Math -> Binary Representation (Chrome AI Mode)`
+
+
 ## 2. When to use the crate
 
 **Pack fields when their positions and widths are fixed and the wire format or memory savings justify the extra work to extract values.**
